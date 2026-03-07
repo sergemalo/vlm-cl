@@ -1,0 +1,10 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
+accelerate
+datasets
+huggingface_hub
+transformers==4.57.6
+bitsandbytes
+pillow
+opencv-python
+torch
+torchvision
