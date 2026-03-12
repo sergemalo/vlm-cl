@@ -1,6 +1,9 @@
 import argparse
 import logging
+from platform import processor
 import torch
+from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
+from ds_adapter_spatial457 import DsAdapterSpatial457
 from seed_ctrl import set_global_seed
 
 logger = logging.getLogger(__name__)
@@ -23,16 +26,79 @@ class EvalConfig:
         #self.max_new_tokens = max_new_tokens
 
 
+class EvalResults:
+    def __init__(self):
+        self.samplesPerLevel = {}
+        self.successPerLevel = {}
+
+    def add_result(self, level: int, success: bool):
+        if level not in self.samplesPerLevel:
+            self.samplesPerLevel[level] = 0
+            self.successPerLevel[level] = 0
+        self.samplesPerLevel[level] += 1
+        if success:
+            self.successPerLevel[level] += 1
+
+    def log_results(self):
+        for level in sorted(self.samplesPerLevel.keys()):
+            total = self.samplesPerLevel[level]
+            success = self.successPerLevel[level]
+            acc = success / total if total > 0 else 0.0
+            logger.info(f"Level {level}: Accuracy = {acc:.2%} ({success}/{total})")
+
 def eval(cfg: EvalConfig):
-    pass
+    eval_results = EvalResults()
+
     # 1) Load dataset
     # (Assuming dataset loading and sampling code is here)
+    eval_ds = DsAdapterSpatial457(split = "test")
 
     # 2) Load model and processor
-    #model_id = "Qwen/Qwen2-VL-2B-Instruct"
-    #model = Qwen2VLForConditionalGeneration.from_pretrained(
-    #    model_id,
-    #    torch_dtype=torch.float16,
+    model_id = "Qwen/Qwen2-VL-2B-Instruct"
+    model = Qwen2VLForConditionalGeneration.from_pretrained(
+        model_id,
+        torch_dtype=torch.float16,
+        device_map=cfg.device
+    )
+    processor = AutoProcessor.from_pretrained(model_id)
+
+    # 3) Evaluation loop
+    for sample in eval_ds:
+
+        # (Assuming sample contains 'image', 'question', 'answer', and 'level')
+        image = sample['image']
+        question = sample['question']
+        answer = sample['answer']
+        level = sample['level']
+
+        # (Assuming model inference code is here to get 'predicted_answer')
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": "What is in this image?"}
+                ]
+            }
+        ]
+
+        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+        inputs = processor(
+            text=[text],
+            images=[image],
+            return_tensors="pt"
+        ).to(model.device)
+
+        output = model.generate(**inputs, max_new_tokens=100)
+        predicted_answer = processor.decode(output[0], skip_special_tokens=True)
+ 
+        success = (predicted_answer == answer)
+        eval_results.add_result(level, success)
+
+    # 4) Log results
+    eval_results.log_results()
+
 
 
 
