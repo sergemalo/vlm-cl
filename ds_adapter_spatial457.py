@@ -128,6 +128,64 @@ def load_images_into_memory(
     return images_by_name
 
 
+
+def build_samples_from_questions_file(
+    questions_file: Path,
+    images_by_name: Dict[str, any]
+) -> List[Dict[str, any]]:
+    """
+    Build samples from one question file.
+
+    Returns a list of dict with:
+      - image_data
+      - level
+      - question
+      - answer
+    """
+    rows = _load_json_or_jsonl(questions_file)
+
+    if default_level_name is None:
+        default_level_name = question_file.stem
+
+    samples: List[Dict[str, Any]] = []
+
+    for row in rows:
+        image_name = _extract_image_name(row)
+
+        if image_name not in images_by_name:
+            continue
+
+        samples.append(
+            {
+                "image_data": images_by_name[image_name],
+                "level": _extract_level_name(row, default_level_name),
+                "question": _extract_question(row),
+                "answer": _extract_answer(row),
+            }
+        )
+
+    return samples
+
+
+def build_all_samples(
+    questions_dir: Path,
+    images_by_name: Dict[str, any],
+) -> list[Dict[str, any]]:
+    """
+    Build samples from multiple question files and concatenate them.
+    """
+    all_samples: list[Dict[str, any]] = []
+
+    for questions_file in questions_dir.glob("*.json"):
+        all_samples.extend(
+            build_samples_from_questions_file(
+                question_files=questions_file,
+                images_by_name=images_by_name,
+            )
+        )
+
+    return all_samples
+
 class DsAdapterSpatial457:
     def __init__(self, request_split=SPLIT_NAME_TEST):
 
@@ -138,9 +196,9 @@ class DsAdapterSpatial457:
 
 
         images_names = get_images_names_set(images_dir, request_split)
-        self.images = load_images_into_memory(images_dir, images_names)
+        self.images_by_name = load_images_into_memory(images_dir, images_names)
 
-
+        self.samples = build_all_samples(questions_dir, self.images_by_name)
 
 
     def __len__(self):
