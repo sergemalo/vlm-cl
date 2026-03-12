@@ -1,6 +1,0 @@
-
-
-
-class DsAdapterSpatial457:
-    def __init__(self):
-        pass

@@ -3,7 +3,7 @@ import logging
 from platform import processor
 import torch
 from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
-from ds_adapter_spatial457 import DsAdapterSpatial457
+from ds_adapter_spatial457 import *
 from seed_ctrl import set_global_seed
 
 logger = logging.getLogger(__name__)
@@ -51,14 +51,16 @@ def eval(cfg: EvalConfig):
 
     # 1) Load dataset
     # (Assuming dataset loading and sampling code is here)
-    eval_ds = DsAdapterSpatial457(split = "test")
+    eval_ds = DsAdapterSpatial457(request_split = SPLIT_NAME_TEST)
 
     # 2) Load model and processor
+    # TODO: Move model loading to model factory funciton
     model_id = "Qwen/Qwen2-VL-2B-Instruct"
+    logger.info(f"Loading model: {model_id}")
     model = Qwen2VLForConditionalGeneration.from_pretrained(
         model_id,
-        torch_dtype=torch.float16,
-        device_map=cfg.device
+        dtype=torch.float16,
+        device_map=cfg.device,
     )
     processor = AutoProcessor.from_pretrained(model_id)
 
@@ -68,7 +70,7 @@ def eval(cfg: EvalConfig):
         # (Assuming sample contains 'image', 'question', 'answer', and 'level')
         image = sample['image']
         question = sample['question']
-        answer = sample['answer']
+        target_answer = sample['answer']
         level = sample['level']
 
         # (Assuming model inference code is here to get 'predicted_answer')
@@ -77,7 +79,7 @@ def eval(cfg: EvalConfig):
                 "role": "user",
                 "content": [
                     {"type": "image"},
-                    {"type": "text", "text": "What is in this image?"}
+                    {"type": "text", "text": question}
                 ]
             }
         ]
@@ -93,7 +95,8 @@ def eval(cfg: EvalConfig):
         output = model.generate(**inputs, max_new_tokens=100)
         predicted_answer = processor.decode(output[0], skip_special_tokens=True)
  
-        success = (predicted_answer == answer)
+        success = (predicted_answer == target_answer)
+        logger.info(f"Predicted Answer: {predicted_answer}; Target Answer: {target_answer}; Success: {success}")
         eval_results.add_result(level, success)
 
     # 4) Log results
