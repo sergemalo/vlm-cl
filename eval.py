@@ -1,7 +1,9 @@
 import argparse
 import logging
-from platform import processor
 import torch
+from platform import processor
+from sympy.stats import sample
+from tqdm import tqdm
 from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
 from ds_adapter_spatial457 import *
 from seed_ctrl import set_global_seed
@@ -65,25 +67,38 @@ def eval(cfg: EvalConfig):
     processor = AutoProcessor.from_pretrained(model_id)
 
     # 3) Evaluation loop
-    for sample in eval_ds:
+    for sample in tqdm(eval_ds, total=len(eval_ds)):
 
-        # (Assuming sample contains 'image', 'question', 'answer', and 'level')
-        image = sample['image']
+        image = sample['image_data']
         question = sample['question']
-        target_answer = sample['answer']
+        target_answer = str(sample["answer"]).strip()
         level = sample['level']
 
         # (Assuming model inference code is here to get 'predicted_answer')
         messages = [
             {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "You are a visual question answering assistant. Answer briefly in one short sentence."
+#                            "Append to your answer a final line in the format 'Final answer: <answer>' where <answer> is your final one-word answer to the question. "
+#                            "Answer using exactly this format:\n"
+#                            "Final answer: <answer>\n"
+#                            "Do not add any explanation."
+                        ),
+                    }
+                ],
+            },
+            {
                 "role": "user",
                 "content": [
                     {"type": "image"},
-                    {"type": "text", "text": question}
-                ]
-            }
+                    {"type": "text", "text": question},
+                ],
+            },
         ]
-
         text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
         inputs = processor(
@@ -92,12 +107,29 @@ def eval(cfg: EvalConfig):
             return_tensors="pt"
         ).to(model.device)
 
-        output = model.generate(**inputs, max_new_tokens=100)
-        predicted_answer = processor.decode(output[0], skip_special_tokens=True)
- 
-        success = (predicted_answer == target_answer)
-        logger.info(f"Predicted Answer: {predicted_answer}; Target Answer: {target_answer}; Success: {success}")
-        eval_results.add_result(level, success)
+        output = model.generate(**inputs, max_new_tokens=20)
+        generated_ids = output[:, inputs["input_ids"].shape[1]:]
+        predicted_answer = processor.batch_decode(
+            generated_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False
+        )[0].strip()
+
+        # Optional parsing
+        prefix = "Final answer:"
+        if predicted_answer.startswith(prefix):
+            parsed_answer = predicted_answer[len(prefix):].strip()
+        else:
+            parsed_answer = predicted_answer.strip()
+
+        success = (parsed_answer.lower() == target_answer.lower())
+
+        logger.debug(
+            f"Predicted raw: {predicted_answer}; "
+            f"Parsed: {parsed_answer.lower()}; "
+            f"Target: {target_answer.lower()}; "
+            f"Success: {success}"
+        )
 
     # 4) Log results
     eval_results.log_results()

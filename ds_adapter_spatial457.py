@@ -1,10 +1,11 @@
-from huggingface_hub import snapshot_download
 import os
 import hashlib
 import logging
+import json
 from pathlib import Path
 from typing import Dict, Iterable, Set
 from PIL import Image
+from huggingface_hub import snapshot_download
 
 
 logger = logging.getLogger(__name__)
@@ -13,14 +14,15 @@ token = os.environ.get("HF_TOKEN")
 if token is None:
     raise RuntimeError("Heille le comique, tu n'as pas setté ta variable d'environnement <HF_TOKEN>, c'est nécessaire pour downloader le DS de HF.")
 
-
 DEFAULT_DS_REPO = "RyanWW/Spatial457"
 SPLIT_NAME_TRAIN = "train"
 SPLIT_NAME_VALID = "valid"
 SPLIT_NAME_TEST = "test"
 
+# TODO: DECIDE if we keep default split ratios
 
-def pick_images_questions_dirs(repo_dir: Path) -> tuple[Path, Path]:
+
+def get_images_questions_dirs(repo_dir: Path) -> tuple[Path, Path]:
     images_dir = repo_dir / "images"
     questions_dir = repo_dir / "questions"
     if images_dir.is_dir() and questions_dir.is_dir():
@@ -84,12 +86,10 @@ def get_images_names_set(
             salt=salt,
         )
         if split == request_split:
-            images_names.add(image_name)
+            images_names.add(image_name.name)
 
     logger.info(f"Found {len(images_names)} in split {request_split}")
     return images_names
-
-from pathlib import Path
 
 
 def load_images_into_memory(
@@ -132,40 +132,39 @@ def load_images_into_memory(
 def build_samples_from_questions_file(
     questions_file: Path,
     images_by_name: Dict[str, any]
-) -> List[Dict[str, any]]:
+) -> list[Dict[str, any]]:
     """
-    Build samples from one question file.
-
-    Returns a list of dict with:
-      - image_data
-      - level
-      - question
-      - answer
+    Build samples from a single questions file.
     """
-    rows = _load_json_or_jsonl(questions_file)
 
-    if default_level_name is None:
-        default_level_name = question_file.stem
+    logger.debug(f"Building samples from {questions_file}")
+    with questions_file.open("r", encoding="utf-8") as f:
+        data = json.load(f)
 
-    samples: List[Dict[str, Any]] = []
+    questions = data["questions"]
+    samples: list[Dict[str, any]] = []
+    level = questions_file.stem
 
-    for row in rows:
-        image_name = _extract_image_name(row)
+    logger.debug(f"Processing {len(questions)} questions for level {level}")
 
-        if image_name not in images_by_name:
+    for q in questions:
+        cur_image_name = q["image_filename"]
+
+        # keep only questions whose image is already in the selected split
+        if cur_image_name not in images_by_name:
             continue
 
         samples.append(
             {
-                "image_data": images_by_name[image_name],
-                "level": _extract_level_name(row, default_level_name),
-                "question": _extract_question(row),
-                "answer": _extract_answer(row),
+                "image_data": images_by_name[cur_image_name],
+                "level": level,
+                "question": q["question"],
+                "answer": str(q["answer"]),
             }
         )
 
+    logger.info(f"Built {len(samples)} samples from {questions_file.name}")
     return samples
-
 
 def build_all_samples(
     questions_dir: Path,
@@ -179,7 +178,7 @@ def build_all_samples(
     for questions_file in questions_dir.glob("*.json"):
         all_samples.extend(
             build_samples_from_questions_file(
-                question_files=questions_file,
+                questions_file=questions_file,
                 images_by_name=images_by_name,
             )
         )
@@ -191,7 +190,7 @@ class DsAdapterSpatial457:
 
         logger.info("Download Spatial457 repo to HF cache...")
         repo_dir = Path(snapshot_download(DEFAULT_DS_REPO, repo_type="dataset"))
-        images_dir, questions_dir = pick_images_questions_dirs(repo_dir)
+        images_dir, questions_dir = get_images_questions_dirs(repo_dir)
         logger.debug(f"Images dir: {images_dir}")
 
 
@@ -202,20 +201,7 @@ class DsAdapterSpatial457:
 
 
     def __len__(self):
-        return len(self.images)
+        return len(self.samples)
 
     def __getitem__(self, idx):
-        pass
-        #ex = self.images[idx]
-
-        #image = ex["image"]
-        #if isinstance(image, str) and self.load_images:
-        #    image = Image.open(image).convert("RGB")
-
-#        return {
-#            "image": image,
-#            "question": ex["question"],
-#            "answer": ex.get("answer", ex.get("gt")),
-#            "image_id": ex["image"],
-#            "level": ex["level"],
-#           }
+        return self.samples[idx]
