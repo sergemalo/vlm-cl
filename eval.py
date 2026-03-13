@@ -1,6 +1,8 @@
 import argparse
 import logging
 import torch
+import wandb
+from datetime import datetime
 from platform import processor
 from sympy.stats import sample
 from tqdm import tqdm
@@ -8,47 +10,68 @@ from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
 from ds_adapter_spatial457 import *
 from seed_ctrl import set_global_seed
 
-logger = logging.getLogger(__name__)
-
-
-class EvalConfig:
-    def __init__(
-        self,
-        device: torch.device,
-        #model_name: str = "Qwen/Qwen2-VL-2B-Instruct",
-        #dataset_name: str = "scienceqa",
-        #images_dir: str = "./data/scienceqa/images",
-        #output_file: str = None,
-    ):
-        self.device = device
-        #self.model_name = model_name
-        #self.dataset_name = dataset_name
-        #self.images_dir = images_dir
-        #self.output_file = output_file
-        #self.max_new_tokens = max_new_tokens
+logger      = logging.getLogger(__name__)
+date_prefix = datetime.now().strftime("%Y-%m-%d-%H:%M")
+output_dir  = f"output/{date_prefix}"
+log_file    = f"{output_dir}/run.log"
+os.mkdir(output_dir)
 
 
 class EvalResults:
     def __init__(self):
-        self.samplesPerLevel = {}
-        self.successPerLevel = {}
+        self.resultsPerLevel = {}
 
-    def add_result(self, level: int, success: bool):
-        if level not in self.samplesPerLevel:
-            self.samplesPerLevel[level] = 0
-            self.successPerLevel[level] = 0
-        self.samplesPerLevel[level] += 1
+    def add_result(self, level: str, success: bool):
+        if level not in self.resultsPerLevel:
+            self.resultsPerLevel[level] = {"total": 0, "success": 0}
+        self.resultsPerLevel[level]["total"] += 1
         if success:
-            self.successPerLevel[level] += 1
+            self.resultsPerLevel[level]["success"] += 1
 
     def log_results(self):
-        for level in sorted(self.samplesPerLevel.keys()):
-            total = self.samplesPerLevel[level]
-            success = self.successPerLevel[level]
+        for level in sorted(self.resultsPerLevel.keys()):
+            total = self.resultsPerLevel[level]["total"]
+            success = self.resultsPerLevel[level]["success"]
             acc = success / total if total > 0 else 0.0
             logger.info(f"Level {level}: Accuracy = {acc:.2%} ({success}/{total})")
 
-def eval(cfg: EvalConfig):
+    def log_results_to_wandb(self):
+        sorted_levels = sorted(self.resultsPerLevel.keys())
+        sorted_accuracies = [self.resultsPerLevel[level]["success"] / self.resultsPerLevel[level]["total"] for level in sorted_levels]
+        table = wandb.Table(data=[[l, a] for l, a in zip(sorted_levels, sorted_accuracies)],
+                            columns=["level", "accuracy"])
+
+        wandb.log({
+            "accuracy_per_level": wandb.plot.bar(
+                table,
+                "level",      # x-axis
+                "accuracy",   # y-axis
+                title="Accuracy per Level"
+            )
+        })
+
+def init_wandb(cfg: dict):        
+    wandb.init(
+        dir     = output_dir,
+        project = "vlm-cl-qwen-2b",
+        name    = date_prefix + "eval",
+        config  = cfg
+    )
+
+    # Log all .py files in the current directory to WandB
+    root = Path(".").resolve()
+    wandb.run.log_code(
+        root=str(root),
+        include_fn=lambda path: (
+            Path(path).suffix == ".py"
+            and Path(path).resolve().parent == root
+        )
+    )
+
+def eval(cfg: dict):
+    """
+    Main evaluation function.
+    """
     eval_results = EvalResults()
 
     # 1) Load dataset
@@ -62,11 +85,14 @@ def eval(cfg: EvalConfig):
     model = Qwen2VLForConditionalGeneration.from_pretrained(
         model_id,
         dtype=torch.float16,
-        device_map=cfg.device,
+        device_map=cfg["device"],
     )
     processor = AutoProcessor.from_pretrained(model_id)
 
-    # 3) Evaluation loop
+    # 3) WanB
+    init_wandb(cfg)
+
+    # 4) Evaluation loop
     for sample in tqdm(eval_ds, total=len(eval_ds)):
 
         image = sample['image_data']
@@ -74,7 +100,7 @@ def eval(cfg: EvalConfig):
         target_answer = str(sample["answer"]).strip()
         level = sample['level']
 
-        # (Assuming model inference code is here to get 'predicted_answer')
+        # TODO: Refactor to use different models, if needed
         messages = [
             {
                 "role": "system",
@@ -83,10 +109,6 @@ def eval(cfg: EvalConfig):
                         "type": "text",
                         "text": (
                             "You are a visual question answering assistant. Answer briefly in one short sentence."
-#                            "Append to your answer a final line in the format 'Final answer: <answer>' where <answer> is your final one-word answer to the question. "
-#                            "Answer using exactly this format:\n"
-#                            "Final answer: <answer>\n"
-#                            "Do not add any explanation."
                         ),
                     }
                 ],
@@ -107,6 +129,7 @@ def eval(cfg: EvalConfig):
             return_tensors="pt"
         ).to(model.device)
 
+        # Generate answer
         output = model.generate(**inputs, max_new_tokens=20)
         generated_ids = output[:, inputs["input_ids"].shape[1]:]
         predicted_answer = processor.batch_decode(
@@ -123,6 +146,7 @@ def eval(cfg: EvalConfig):
             parsed_answer = predicted_answer.strip()
 
         success = (parsed_answer.lower() == target_answer.lower())
+        eval_results.add_result(level, success)
 
         logger.debug(
             f"Predicted raw: {predicted_answer}; "
@@ -131,19 +155,46 @@ def eval(cfg: EvalConfig):
             f"Success: {success}"
         )
 
-    # 4) Log results
+    # 5) Log results
     eval_results.log_results()
+    eval_results.log_results_to_wandb()
+
+    wandb.save(log_file)
+    wandb.finish()
 
 
+def init_logging(log_level: str):
+    """
+    Initialize logging with both console and file handlers.
+     - Console logs are filtered by the specified log level.
+     - File logs capture everything at DEBUG level for detailed analysis.
+     - Log file is saved in the output directory with a timestamped name.
+    """
+    logger.setLevel(logging.DEBUG)  # Global minimum level
+
+    # --- Console handler ---
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(log_level.upper())
+
+    # --- File handler ---
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.DEBUG)
+
+    formatter = logging.Formatter(
+        "%(asctime)s - %(levelname)s - %(message)s"
+    )
+    console_handler.setFormatter(formatter)
+    file_handler.setFormatter(formatter)
+
+    # Attach handlers
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)    
 
 
 def main():
     parser = argparse.ArgumentParser(description="VLM Evaluate Script")
-    #parser.add_argument("--model", type=str, required=True, help="Model name or path")
+    parser.add_argument("--model_id", type=str, default="Qwen/Qwen2-VL-2B-Instruct", help="Model name or path")
     #parser.add_argument("--dataset", type=str, default="scienceqa", help="Dataset name or path")
-    #parser.add_argument("--images_dir", type=str, default="./data/scienceqa/images", help="Directory containing images")
-    #parser.add_argument("--output_file", type=str, default=None, help="File to save detailed results (JSONL)")
-    #parser.add_argument("--max_new_tokens", type=int, default=16, help="Max new tokens to generate")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument(
         "--log_level",
@@ -153,28 +204,20 @@ def main():
     )
     args = parser.parse_args()
 
-    # LOGGING SETUP
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper()),
-        format="%(asctime)s [%(levelname)s] %(message)s",
-    )
+    init_logging(args.log_level)
 
-    # SEED SETUP
     set_global_seed(args.seed)
 
     # DEVICE SETUP
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
-    cfg = EvalConfig(
-        device=device,
-        #model_name="Qwen/Qwen2-VL-2B-Instruct",
-        #dataset_name="scienceqa",
-        #images_dir="./data/scienceqa/images",
-        #output_file=args.output_file,
-        #max_new_tokens=16,
-       # log_level=args.log_level,
-    )
+    cfg = {
+        "device": device,
+        "model_id": args.model_id,
+        "seed": args.seed,
+        # "dataset_name": args.dataset,
+    }
 
     eval(cfg)
 
