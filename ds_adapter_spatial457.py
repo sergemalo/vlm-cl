@@ -169,13 +169,17 @@ def build_samples_from_questions_file(
 def build_all_samples(
     questions_dir: Path,
     images_by_name: Dict[str, any],
+    max_level: int = 0
 ) -> list[Dict[str, any]]:
     """
     Build samples from multiple question files and concatenate them.
     """
     all_samples: list[Dict[str, any]] = []
+    valid_prefixes = [f"L{lvl}" for lvl in range(1, max_level + 1)] if max_level > 0 else None
 
     for questions_file in questions_dir.glob("*.json"):
+        if valid_prefixes and not any(questions_file.stem.startswith(prefix) for prefix in valid_prefixes):
+            continue
         all_samples.extend(
             build_samples_from_questions_file(
                 questions_file=questions_file,
@@ -186,7 +190,7 @@ def build_all_samples(
     return all_samples
 
 class DsAdapterSpatial457:
-    def __init__(self, request_split=SPLIT_NAME_TEST):
+    def __init__(self, request_split=SPLIT_NAME_TEST, max_level: int = 0):
 
         logger.info("Download Spatial457 repo to HF cache...")
         repo_dir = Path(snapshot_download(DEFAULT_DS_REPO, repo_type="dataset"))
@@ -197,7 +201,7 @@ class DsAdapterSpatial457:
         images_names = get_images_names_set(images_dir, request_split)
         self.images_by_name = load_images_into_memory(images_dir, images_names)
 
-        self.samples = build_all_samples(questions_dir, self.images_by_name)
+        self.samples = build_all_samples(questions_dir, self.images_by_name, max_level)
 
 
     def __len__(self):
@@ -205,3 +209,29 @@ class DsAdapterSpatial457:
 
     def __getitem__(self, idx):
         return self.samples[idx]
+    
+    def eval_answer(self, predicted_answer: str, target_answer: str) -> bool:
+        """
+        Evaluate the predicted answer against the target answer.
+
+        For now, we do a simple string equality after stripping and lowercasing.
+        This can be improved with more sophisticated metrics if needed.
+        """
+
+        # Handle boolean answers (e.g., True/False, Yes/No)
+        if isinstance(predicted_answer, bool):
+            predicted_answer = "yes" if predicted_answer else "no"
+        if isinstance(target_answer, bool):
+            target_answer = "yes" if target_answer else "no"
+
+        if predicted_answer.lower() in ["true", "yes"]:
+            predicted_answer = "yes"
+        elif predicted_answer.lower() in ["false", "no"]:
+            predicted_answer = "no"
+
+        if target_answer.lower() in ["true", "yes"]:
+            target_answer = "yes"
+        elif target_answer.lower() in ["false", "no"]:
+            target_answer = "no"
+        
+        return predicted_answer.strip().lower() == target_answer.strip().lower()
