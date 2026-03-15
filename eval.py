@@ -76,7 +76,7 @@ def eval(cfg: dict):
 
     # 1) Load dataset
     # (Assuming dataset loading and sampling code is here)
-    eval_ds = DsAdapterSpatial457(request_split = SPLIT_NAME_TEST)
+    eval_ds = DsAdapterSpatial457(request_split = SPLIT_NAME_TEST, max_level=0)
 
     # 2) Load model and processor
     # TODO: Move model loading to model factory funciton
@@ -108,7 +108,7 @@ def eval(cfg: dict):
                     {
                         "type": "text",
                         "text": (
-                            "You are a visual question answering assistant. Answer briefly in one short sentence."
+                            "You are a visual question answering assistant. Answer in one word."
                         ),
                     }
                 ],
@@ -132,28 +132,22 @@ def eval(cfg: dict):
         # Generate answer
         output = model.generate(**inputs, max_new_tokens=20)
         generated_ids = output[:, inputs["input_ids"].shape[1]:]
-        predicted_answer = processor.batch_decode(
+        whole_pred_answer = processor.batch_decode(
             generated_ids,
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False
-        )[0].strip()
+        )
+        filtered_pred_answer = whole_pred_answer[0].strip() if whole_pred_answer else ""  # Take only the first word as the answer
 
-        # Optional parsing
-        prefix = "Final answer:"
-        if predicted_answer.startswith(prefix):
-            parsed_answer = predicted_answer[len(prefix):].strip()
-        else:
-            parsed_answer = predicted_answer.strip()
-
-        success = (parsed_answer.lower() == target_answer.lower())
+        # Evaluate answer
+        success = eval_ds.eval_answer(filtered_pred_answer, target_answer)
         eval_results.add_result(level, success)
 
-        logger.debug(
-            f"Predicted raw: {predicted_answer}; "
-            f"Parsed: {parsed_answer.lower()}; "
-            f"Target: {target_answer.lower()}; "
-            f"Success: {success}"
-        )
+        logger.debug(f"Qu: {question}")
+        logger.debug(f"Ta: {target_answer.lower()}")
+        #logger.debug(f"Whole generated answer: '{whole_pred_answer}'")
+        logger.debug(f"Pa: {filtered_pred_answer.lower()}")
+        logger.debug(f"S?: {success}")
 
     # 5) Log results
     eval_results.log_results()
@@ -170,7 +164,9 @@ def init_logging(log_level: str):
      - File logs capture everything at DEBUG level for detailed analysis.
      - Log file is saved in the output directory with a timestamped name.
     """
-    logger.setLevel(logging.DEBUG)  # Global minimum level
+    # Tricky: using root logger to ensure all logs (including from imported modules) are captured and directed to our handlers.
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)  # Global minimum level
 
     # --- Console handler ---
     console_handler = logging.StreamHandler()
@@ -187,8 +183,8 @@ def init_logging(log_level: str):
     file_handler.setFormatter(formatter)
 
     # Attach handlers
-    logger.addHandler(console_handler)
-    logger.addHandler(file_handler)    
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)    
 
 
 def main():
