@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from adapter import Adapter
+from utils.cl.adapter import Adapter
 
 class MoEAdapter(nn.Module):
     """Class for Mixture-of-Expert"""
@@ -48,10 +48,13 @@ class MoEAdapter(nn.Module):
 
         # Keep old experts, add the new Experts for this task
         new_experts = [
-            Adapter(d_model=d_model, bottleneck=rank, dropout=dropout)
+            Adapter(d_model=d_model, rank=rank, dropout=dropout)
             for _ in range(num_experts - len(existing_experts))
         ]
         self.experts = nn.ModuleList(existing_experts + new_experts)
+        for expert in new_experts:
+            for param in expert.parameters():
+                param.requires_grad = True
 
         # ----- Routers -----
         existing_routers = existing_routers or []
@@ -64,6 +67,8 @@ class MoEAdapter(nn.Module):
         # Initialize new Router and add it to the list of Routers
         new_router = nn.Linear(d_model, self.num_experts)
         self.routers = nn.ModuleList(existing_routers + [new_router])
+        for param in new_router.parameters():
+            param.requires_grad = True
 
     
     def _get_boosted_logits(self, logits):

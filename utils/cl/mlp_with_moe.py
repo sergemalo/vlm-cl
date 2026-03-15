@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from moe import MoEAdapter
+from utils.cl.moe import MoEAdapter
 
 class MLPWithMoE(nn.Module):
     """Class for augmenting model MLP layers with MoE Adapters"""
@@ -11,7 +11,8 @@ class MLPWithMoE(nn.Module):
         self.mlp = mlp
         self.moe = MoEAdapter(d_model, num_experts, rank, top_k, dropout,
                               existing_experts, existing_routers, mode)
-        self.alpha = nn.Parameter(torch.zeros(1)) # Learnable scale so MLP and MoE are on the same scale
+        self.alpha = nn.Parameter(torch.ones(1) * 0.01) # Learnable scale so MLP and MoE are on the same scale
+        self.alpha.requires_grad = True
 
     def forward(self, x):
         return self.mlp(x) + self.alpha * self.moe(x)

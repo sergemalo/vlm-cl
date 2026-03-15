@@ -1,12 +1,12 @@
 import torch
-from mlp_with_moe import MLPWithMoE
+from utils.cl.mlp_with_moe import MLPWithMoE
 
 class ExpertRegularizer:
     """
     Collects snapshots and Fisher information only from old experts
     across all MLPWithMoE layers in the model.
     """
-    def __init__(self, model, old_task_dataloader, criterion,
+    def __init__(self, model, old_task_dataloader,
                  lambda_reg=100.0, mode="ewc", device="cpu"):
         self.lambda_reg = lambda_reg
         self.mode = mode
@@ -17,7 +17,7 @@ class ExpertRegularizer:
         self.anchors, self.param_refs = self._snapshot_old_experts(model)
 
         if mode == "ewc":
-            self.fisher = self._compute_fisher(model, old_task_dataloader, criterion)
+            self.fisher = self._compute_fisher(model, old_task_dataloader)
 
 
     def _snapshot_old_experts(self, model):
@@ -52,17 +52,17 @@ class ExpertRegularizer:
         return anchors, param_refs
 
 
-    def _compute_fisher(self, model, dataloader, criterion):
+    def _compute_fisher(self, model, dataloader):
         fisher = {name: torch.zeros_like(anchor)
-                  for name, anchor in self.anchors.items()}
+                for name, anchor in self.anchors.items()}
 
         model.eval()
-        for inputs, targets in dataloader:
-            inputs, targets = inputs.to(self.device), targets.to(self.device)
+        for inputs in dataloader:
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
             model.zero_grad()
-            loss = criterion(model(inputs), targets)
-            loss.backward()
+            outputs = model(**inputs)  # loss computed internally from labels
+            outputs.loss.backward()
 
             for name, param in self.param_refs.items():
                 if param.grad is not None:
