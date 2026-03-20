@@ -76,7 +76,7 @@ def eval(cfg: dict):
 
     # 1) Load dataset
     # (Assuming dataset loading and sampling code is here)
-    eval_ds = DsAdapterSpatial457(request_split = SPLIT_NAME_TEST, max_level=0)
+    eval_ds = DsAdapterSpatial457(request_split = SPLIT_NAME_TEST, max_level=cfg["max_level"])
 
     # 2) Load model and processor
     # TODO: Move model loading to model factory funciton
@@ -121,17 +121,23 @@ def eval(cfg: dict):
                 ],
             },
         ]
-        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-        inputs = processor(
-            text=[text],
+        prompt_text = processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        gen_inputs = processor(
+            text=[prompt_text],
             images=[image],
-            return_tensors="pt"
+            return_tensors="pt",
         ).to(model.device)
 
         # Generate answer
-        output = model.generate(**inputs, max_new_tokens=20)
-        generated_ids = output[:, inputs["input_ids"].shape[1]:]
+        with torch.no_grad():
+            output = model.generate(**gen_inputs, max_new_tokens=20)
+
+        generated_ids = output[:, gen_inputs["input_ids"].shape[1]:]
         whole_pred_answer = processor.batch_decode(
             generated_ids,
             skip_special_tokens=True,
@@ -143,11 +149,44 @@ def eval(cfg: dict):
         success = eval_ds.eval_answer(filtered_pred_answer, target_answer)
         eval_results.add_result(level, success)
 
+        if cfg["report_loss"]:
+            # -------------------------
+            # 2) Loss pass
+            # -------------------------
+            # Build full text = prompt + target answer
+            full_text = prompt_text + target_answer
+
+            loss_inputs = processor(
+                text=[full_text],
+                images=[image],
+                return_tensors="pt",
+            ).to(model.device)
+
+            # Labels start as a copy of input_ids
+            labels = loss_inputs["input_ids"].clone()
+
+            # Mask prompt tokens so loss is only computed on answer tokens
+            prompt_only_inputs = processor(
+                text=[prompt_text],
+                images=[image],
+                return_tensors="pt",
+            ).to(model.device)
+
+            prompt_len = prompt_only_inputs["input_ids"].shape[1]
+            labels[:, :prompt_len] = -100
+
+            with torch.no_grad():
+                loss_outputs = model(**loss_inputs, labels=labels)
+                loss = loss_outputs.loss
+
+
         logger.debug(f"Qu: {question}")
         logger.debug(f"Ta: {target_answer.lower()}")
         #logger.debug(f"Whole generated answer: '{whole_pred_answer}'")
         logger.debug(f"Pa: {filtered_pred_answer.lower()}")
         logger.debug(f"S?: {success}")
+        if cfg["report_loss"]:
+            logger.debug(f"L : {loss}")
 
     # 5) Log results
     eval_results.log_results()
@@ -192,6 +231,8 @@ def main():
     parser.add_argument("--model_id", type=str, default="Qwen/Qwen2-VL-2B-Instruct", help="Model name or path")
     #parser.add_argument("--dataset", type=str, default="scienceqa", help="Dataset name or path")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.add_argument("--max_level", type=int, default=0, help="Max level of questions to evaluate (0 for all levels)")
+    parser.add_argument("--report_loss", type=bool, default=False, help="Report loss in the debug log")
     parser.add_argument(
         "--log_level",
         default="INFO",
@@ -212,6 +253,8 @@ def main():
         "device": device,
         "model_id": args.model_id,
         "seed": args.seed,
+        "max_level": args.max_level,
+        "report_loss": args.report_loss,
         # "dataset_name": args.dataset,
     }
 
