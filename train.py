@@ -59,7 +59,7 @@ def set_trainable_param(model, cfg):
     existing_routers_by_layer = {}
     if cfg.get("past_adapters_path") is not None:
         saved = torch.load(cfg["past_adapters_path"])
-        for layer_idx in cfg["target_layers"]:
+        for layer_idx in range(cfg["target_layers"][0], cfg["target_layers"][1]+1):
 
             # ── Experts ──────────────────────────────────────────
             prefix = f"model.language_model.layers.{layer_idx}.mlp.moe.experts."
@@ -107,7 +107,7 @@ def set_trainable_param(model, cfg):
                 router_idx += 1
             existing_routers_by_layer[layer_idx] = routers
 
-    for layer_idx in cfg["target_layers"]:
+    for layer_idx in range(cfg["target_layers"][0], cfg["target_layers"][1]+1):
         original_mlp = model.model.language_model.layers[layer_idx].mlp
         existing_experts = existing_experts_by_layer.get(layer_idx, [])
         existing_routers = existing_routers_by_layer.get(layer_idx, [])
@@ -194,7 +194,7 @@ if __name__ == "__main__":
     parser.add_argument("--per_device_train_batch_size", type=int, default=2)
     parser.add_argument("--learning_rate", type=float, default=2e-5)
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
-    parser.add_argument("--target_layers", type=int, nargs='+', default=[26,27])
+    parser.add_argument("--target_layers", type=int, nargs='+', default=[1,27])
     parser.add_argument("--path_prev_routers_experts", type=str)
     parser.add_argument("--num_experts", type=int, default=4)
     parser.add_argument("--moe_rank", type=int, default=16)
@@ -269,7 +269,7 @@ if __name__ == "__main__":
         save_strategy="no",
         fp16=False,
         bf16=True,         # requires Ampere GPU (RTX 30xx, 40xx)
-        logging_steps=1,
+        logging_steps=250,
         report_to="wandb",  # ← Trainer logs loss/lr/eval metrics to wandb automatically
         remove_unused_columns=False,
     )
