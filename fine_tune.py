@@ -3,13 +3,13 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from transformers import TrainingArguments, AutoProcessor, Qwen2VLForConditionalGeneration
 
-from seed_ctrl import set_global_seed
-from eval import init_logging
+from utils.general.seed_ctrl import set_global_seed
 
 from utils.data.dataset import DsAdapterSpatial457PerLevel, SPLIT_NAME_TRAIN, SPLIT_NAME_VALID
 from utils.train.collator import Spatial457Collator
 from utils.train.trainer import MyTrainer
 from utils.eval.metrics import compute_metrics
+from utils.general.our_logging import init_logging
 
 import wandb
 import logging
@@ -20,16 +20,16 @@ import argparse
 
 
 logger      = logging.getLogger(__name__)
-date_prefix = datetime.now().strftime("%Y-%m-%d-%H-%M")
-output_dir  = f"output/{date_prefix}"
-Path(output_dir).mkdir(parents=True, exist_ok=True)
+date_prefix = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+output_dir  = Path(f"output/{date_prefix}_fine_tune")
+output_dir.mkdir(parents=True, exist_ok=True)
 
 
 def init_wandb(cfg: dict):
     wandb.init(
         dir     = output_dir,
         project = "vlm-cl-qwen-2b",
-        name    = date_prefix + "_train",
+        name    = date_prefix + "_fine_tune",
         config  = cfg
     )
 
@@ -95,12 +95,12 @@ def unfreeze_last_qwen2vl_text_layers(model, num_last_layers=2, train_lm_head=Tr
 
 
 def main(args, cfg, model, trainer, collator):
-    init_logging(args.log_level)
+    init_logging(args.log_level, output_dir)
     init_wandb(cfg)
     total_layers = unfreeze_last_qwen2vl_text_layers(
         model,
-        num_last_layers=2,   # change this
-        train_lm_head=True,
+        num_last_layers=1,
+        train_lm_head=False,
     )
 
     logger.info(f"Total text layers: {total_layers}")
@@ -108,7 +108,8 @@ def main(args, cfg, model, trainer, collator):
     trainer.train()
 
     # Save the final model à la Hugging Face format (includes both model and processor, important for VLMs)
-    final_save_path = Path(output_dir) / "fine_tuned_model"
+    final_save_path = output_dir / "fine_tuned_model"
+    final_save_path.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(final_save_path)
     trainer.processing_class.save_pretrained(final_save_path)  # IMPORTANT for VLM
     logger.info(f"Saved final model checkpoint to {final_save_path}")
@@ -159,6 +160,12 @@ if __name__ == "__main__":
     # ──────────────────────────────────────────────
     MODEL_ID = args.model_id
 
+    model = Qwen2VLForConditionalGeneration.from_pretrained(
+        MODEL_ID,
+        dtype=torch.float16,
+        device_map=device,
+    )
+
     cfg = {
         "model_id":              MODEL_ID,
         "level":                 args.level,
@@ -172,11 +179,6 @@ if __name__ == "__main__":
         "seed":                  args.seed
     }
 
-    model = Qwen2VLForConditionalGeneration.from_pretrained(
-        MODEL_ID,
-        dtype=torch.float16,
-        device_map=cfg["device"],
-    )
 
 
     # ──────────────────────────────────────────────

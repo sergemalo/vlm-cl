@@ -5,6 +5,9 @@ from transformers import Trainer, GenerationConfig
 from transformers.trainer_utils import EvalLoopOutput
 from torch.utils.data import DataLoader
 import string
+import logging
+
+logger      = logging.getLogger(__name__)
 
 IGNORE_INDEX = -100
 
@@ -27,6 +30,8 @@ class MyTrainer(Trainer):
         task_loss = outputs.loss
 
         reg_loss = self.regularizer.penalty() if hasattr(self, "regularizer") else 0.0
+
+        #logger.debug(f"TL={task_loss}, RL={reg_loss}")
 
         loss = task_loss + reg_loss
 
