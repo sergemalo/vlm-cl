@@ -128,6 +128,23 @@ def load_images_into_memory(
     return images_by_name
 
 
+def normalize_answer(ans) -> str:
+    ans = str(ans).strip().lower()
+
+    # Remove simple trailing punctuation
+    ans = ans.rstrip(" .,!?:;")
+
+    bool_map = {
+        "true": "yes",
+        "false": "no",
+        "yes": "yes",
+        "no": "no",
+    }
+    if ans in bool_map:
+        return bool_map[ans]
+
+    return ans
+
 
 def build_samples_from_questions_file(
     questions_file: Path,
@@ -159,7 +176,7 @@ def build_samples_from_questions_file(
                 "image_data": images_by_name[cur_image_name],
                 "level": level,
                 "question": q["question"],
-                "answer": str(q["answer"]),
+                "answer": normalize_answer(q["answer"]),
             }
         )
 

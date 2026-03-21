@@ -6,7 +6,7 @@ class MoEAdapter(nn.Module):
     """Class for Mixture-of-Expert"""
 
     def __init__(self, d_model, num_experts=8, rank=16, top_k=2, dropout=0.0, 
-                 existing_experts=None, existing_routers=None, mode="train",
+                 existing_experts=None, existing_routers=None, mode="train", level_id=None,
                  anneal_steps=5000, init_bonus=3.0):
         """
         existing_experts:           Experts initialized previously to be re-used 
@@ -21,14 +21,18 @@ class MoEAdapter(nn.Module):
 
         mode:                       Used to select the appropriate Router
 
+        level_id:                   When mode is eval, used to select the appropriate router
+
         anneal_steps/init_bonus:    Used to guide routing towards new Experts early on
         """
         super().__init__()
 
         # Expert-related hyperparameters
         self.num_experts = num_experts
+        self.rank = rank
         self.top_k = top_k
         self.mode = mode
+        self.level_id = level_id
 
         # Cold start Routing-related hyperparameters
         self.num_old_experts = len(existing_experts or [])
@@ -48,7 +52,7 @@ class MoEAdapter(nn.Module):
 
         # Keep old experts, add the new Experts for this task
         new_experts = [
-            Adapter(d_model=d_model, rank=rank, dropout=dropout)
+            Adapter(d_model=d_model, rank=self.rank, dropout=dropout)
             for _ in range(num_experts - len(existing_experts))
         ]
         self.experts = nn.ModuleList(existing_experts + new_experts)
@@ -76,7 +80,7 @@ class MoEAdapter(nn.Module):
         Boost new expert logits early in training, annealing to 0.
         Old experts are still selectable — we're leveling the field, not excluding them.
         """
-        if not self.training or self.num_old_experts == 0:
+        if self.mode != "train":
             return logits
 
         progress = min(self.current_step.item() / self.anneal_steps, 1.0)
@@ -97,8 +101,8 @@ class MoEAdapter(nn.Module):
         
         # At inference, figure out the appropriate Router (batch of 1)
         else:
-            router_idx = -1 # TODO: At inference, find the appropriate router (probably simple classifier)
-            router = self.routers[router_idx]
+            #router_idx = -1 # TODO: At inference, find the appropriate router (probably simple classifier)
+            router = self.routers[self.level_id]
 
         # Weight all of the Experts
         logits = router(x)
