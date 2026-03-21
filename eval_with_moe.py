@@ -1,23 +1,22 @@
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
 from transformers import TrainingArguments, AutoProcessor, Qwen2VLForConditionalGeneration
 
 from seed_ctrl import set_global_seed
 from eval import init_logging
 
-from utils.data.dataset import DsAdapterSpatial457PerLevel, SPLIT_NAME_TRAIN, SPLIT_NAME_VALID
+from utils.data.dataset import DsAdapterSpatial457PerLevel, SPLIT_NAME_VALID
 from utils.train.collator import Spatial457Collator
 from utils.train.trainer import MyTrainer
 from utils.eval.metrics import compute_metrics
 from utils.cl.mlp_with_moe import MLPWithMoE
 from utils.cl.adapter import Adapter
-from utils.cl.expert_regularizer import ExpertRegularizer
 
 import wandb
 import logging
 from datetime import datetime
 from pathlib import Path
+import re
 
 import argparse
 
@@ -32,8 +31,7 @@ def init_wandb(cfg: dict):
     wandb.init(
         dir     = output_dir,
         project = "vlm-cl-qwen-2b",
-        entity = "vlm-cl",
-        name    = date_prefix + "_train",
+        name    = date_prefix + "_eval",
         config  = cfg
     )
 
@@ -46,6 +44,40 @@ def init_wandb(cfg: dict):
             and Path(path).resolve().parent == root
         )
     )
+
+
+def infer_num_experts(state_dict, layer_idx=1):
+    prefix = f"model.language_model.layers.{layer_idx}.mlp.moe.experts."
+
+    expert_indices = set()
+
+    for k in state_dict.keys():
+        if k.startswith(prefix):
+            # Extract the expert index i
+            # pattern: experts.i.
+            match = re.search(r"experts\.(\d+)\.", k)
+            if match:
+                expert_indices.add(int(match.group(1)))
+
+    if not expert_indices:
+        raise ValueError(f"No experts found for layer {layer_idx}")
+
+    return max(expert_indices) + 1
+
+
+def infer_rank(state_dict, layer_idx=1):
+    prefix = f"model.language_model.layers.{layer_idx}.mlp.moe.experts."
+
+    for k, v in state_dict.items():
+        if k.startswith(prefix) and k.endswith("down_proj.weight"):
+            rank = v.shape[0]   # [rank, d_model]
+            return rank
+
+    raise ValueError(f"Could not find down_proj.weight for layer {layer_idx}")
+
+
+def extract_level_id(name: str) -> int:
+    return int(name.split("_")[0][1:])-1
 
 
 def set_trainable_param(model, cfg):
@@ -126,60 +158,26 @@ def set_trainable_param(model, cfg):
             rank=cfg["moe_rank"],
             top_k=cfg["top_k"],
             existing_experts=existing_experts,
-            existing_routers=existing_routers, 
+            existing_routers=existing_routers,
+            mode="eval",
+            level_id=extract_level_id(cfg["level"])
         )
 
         new_mlp.moe.to(dtype=model_dtype, device=model_device)
         new_mlp.alpha.data = new_mlp.alpha.data.to(dtype=model_dtype, device=model_device)
 
         model.model.language_model.layers[layer_idx].mlp = new_mlp
-        model.model.language_model.layers[layer_idx].mlp.alpha.requires_grad = True
+        model.model.language_model.layers[layer_idx].mlp.alpha.requires_grad = False
 
-
-def set_parameter_regularizer(model, cfg, collator):
-    if cfg.get("path_prev_routers_experts") is not None:
-        # Retrieve dataset of previous level (args.level-1)
-        prev_train_dataset = DsAdapterSpatial457PerLevel(request_split=SPLIT_NAME_TRAIN, 
-                                                    request_level=args.level-1)
-        old_task_dataloader = DataLoader(
-            prev_train_dataset,
-            batch_size=cfg["per_device_train_batch_size"],
-            collate_fn=collator,
-        )
-        regularizer = ExpertRegularizer(
-            model=model,
-            old_task_dataloader=old_task_dataloader,  # dataloader from previous task
-            criterion=None,  # not needed, loss computed inside model
-            lambda_reg=cfg["lambda_reg"],
-            mode=cfg["reg_mode"],
-            device=device,
-        )
-        trainer.set_regularizer(regularizer)
         
 
-def main(args, cfg, model, trainer, collator):
+def main(args, cfg, model, trainer):
     init_logging(args.log_level)
     set_global_seed(args.seed)
     init_wandb(cfg)
     set_trainable_param(model, cfg)
-    set_parameter_regularizer(model, cfg, collator)
     
-    trainer.train()
-
-    # Save MoE parameters
-    trainable_state_dict = {
-        name: param
-        for name, param in model.named_parameters()
-        if "moe.experts" in name or "moe.routers" in name or "mlp.alpha" in name
-    }
-    save_path = Path(output_dir) / "moe_adapters.pt"
-    torch.save(trainable_state_dict, save_path)
-    logger.info(f"Saved MoE adapters to {save_path}")
-
-    # Log to wandb as artifact
-    artifact = wandb.Artifact(name="moe_adapters", type="model")
-    artifact.add_file(str(save_path))
-    wandb.log_artifact(artifact)
+    trainer.evaluate()
 
     wandb.finish()
 
@@ -196,16 +194,9 @@ if __name__ == "__main__":
         help="Logging level"
     )
 
-    parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--per_device_train_batch_size", type=int, default=2)
-    parser.add_argument("--learning_rate", type=float, default=2e-5)
-    parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--target_layers", type=int, nargs='+', default=[1,27])
     parser.add_argument("--past_adapters_path", type=str)
-    parser.add_argument("--num_experts", type=int, default=4)
-    parser.add_argument("--moe_rank", type=int, default=16)
     parser.add_argument("--top_k", type=int, default=2)
-    parser.add_argument("--lambda_reg", type=float, default=100.0) # Very strong parameter regularization
     
     args = parser.parse_args()
 
@@ -225,26 +216,25 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
+    state_dict = torch.load(args.past_adapters_path)
+    num_experts = infer_num_experts(state_dict)
+    moe_rank = infer_rank(state_dict)
+
     cfg = {
         "model_id":              MODEL_ID,
         "level":                 args.level,
-        "epochs":                args.epochs,
-        "per_device_train_batch_size": args.per_device_train_batch_size,
-        "learning_rate":         args.learning_rate,
-        "max_grad_norm":         args.max_grad_norm,
         "target_layers":         args.target_layers,
         "past_adapters_path":    args.past_adapters_path,
-        "num_experts":           args.num_experts,
-        "moe_rank":              args.moe_rank,
+        "num_experts":           num_experts,
+        "moe_rank":              moe_rank,
         "top_k":                 args.top_k,
-        "lambda_reg":            args.lambda_reg,
         "d_model":               model.config.text_config.hidden_size,
         "device":                str(device),
         "seed":                  args.seed
     }
 
     # ──────────────────────────────────────────────
-    # Processor & Collator
+    # Processor
     # ──────────────────────────────────────────────
 
     processor = AutoProcessor.from_pretrained(MODEL_ID)
@@ -252,11 +242,9 @@ if __name__ == "__main__":
 
 
     # ──────────────────────────────────────────────
-    # Datasets
+    # Dataset
     # ──────────────────────────────────────────────
 
-    train_dataset = DsAdapterSpatial457PerLevel(request_split=SPLIT_NAME_TRAIN, 
-                                                request_level=args.level)
     eval_dataset  = DsAdapterSpatial457PerLevel(request_split=SPLIT_NAME_VALID,
                                                 request_level=args.level)
 
@@ -266,11 +254,7 @@ if __name__ == "__main__":
 
     training_args = TrainingArguments(
         output_dir=output_dir,
-        num_train_epochs=cfg["epochs"],
-        per_device_train_batch_size=cfg["per_device_train_batch_size"],
         per_device_eval_batch_size=1,
-        learning_rate=cfg["learning_rate"],
-        max_grad_norm=cfg["max_grad_norm"],
         eval_strategy="epoch",
         save_strategy="no",
         fp16=False,
@@ -283,11 +267,10 @@ if __name__ == "__main__":
     trainer = MyTrainer(
         model=model,
         args=training_args,
-        train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         processing_class=processor,
         data_collator=collator,
         compute_metrics=compute_metrics,
     )
 
-    main(args, cfg, model, trainer, collator)
+    main(args, cfg, model, trainer)

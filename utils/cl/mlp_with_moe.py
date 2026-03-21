@@ -6,11 +6,11 @@ class MLPWithMoE(nn.Module):
     """Class for augmenting model MLP layers with MoE Adapters"""
 
     def __init__(self, mlp, d_model, num_experts=8, rank=16, top_k=2, dropout=0.0, 
-                 existing_experts=None, existing_routers=None, mode="train"):
+                 existing_experts=None, existing_routers=None, mode="train", level_id=None):
         super().__init__()
         self.mlp = mlp
         self.moe = MoEAdapter(d_model, num_experts, rank, top_k, dropout,
-                              existing_experts, existing_routers, mode)
+                              existing_experts, existing_routers, mode, level_id)
         self.alpha = nn.Parameter(torch.ones(1) * 0.01) # Learnable scale so MLP and MoE are on the same scale
         self.alpha.requires_grad = True
 

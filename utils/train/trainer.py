@@ -204,7 +204,7 @@ class MyTrainer(Trainer):
             f"{metric_key_prefix}_{k}" if not k.startswith(metric_key_prefix) else k: v
             for k, v in metrics.items()
         }
-        self.log(metrics)
+        #self.log(metrics)
 
         return EvalLoopOutput(
             predictions=all_predictions,
