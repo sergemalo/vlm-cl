@@ -8,14 +8,13 @@ from sympy.stats import sample
 from tqdm import tqdm
 from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
 from ds_adapter_spatial457 import *
-from seed_ctrl import set_global_seed
+from utils.general.seed_ctrl import set_global_seed
+from utils.general.our_logging import init_logging
 
 logger      = logging.getLogger(__name__)
 date_prefix = datetime.now().strftime("%Y-%m-%d-%H:%M")
-output_dir  = f"output/{date_prefix}"
-log_file    = f"{output_dir}/run.log"
-os.mkdir(output_dir)
-
+output_dir  = Path(f"output/{date_prefix}_eval")
+output_dir.mkdir(parents=True, exist_ok=True)
 
 class EvalResults:
     def __init__(self):
@@ -54,7 +53,7 @@ def init_wandb(cfg: dict):
     wandb.init(
         dir     = output_dir,
         project = "vlm-cl-qwen-2b",
-        name    = date_prefix + "eval",
+        name    = date_prefix + "_eval",
         config  = cfg
     )
 
@@ -192,38 +191,9 @@ def eval(cfg: dict):
     eval_results.log_results()
     eval_results.log_results_to_wandb()
 
-    wandb.save(log_file)
+    #wandb.save(log_file)
     wandb.finish()
 
-
-def init_logging(log_level: str):
-    """
-    Initialize logging with both console and file handlers.
-     - Console logs are filtered by the specified log level.
-     - File logs capture everything at DEBUG level for detailed analysis.
-     - Log file is saved in the output directory with a timestamped name.
-    """
-    # Tricky: using root logger to ensure all logs (including from imported modules) are captured and directed to our handlers.
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG)  # Global minimum level
-
-    # --- Console handler ---
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(log_level.upper())
-
-    # --- File handler ---
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.DEBUG)
-
-    formatter = logging.Formatter(
-        "%(asctime)s - %(levelname)s - %(message)s"
-    )
-    console_handler.setFormatter(formatter)
-    file_handler.setFormatter(formatter)
-
-    # Attach handlers
-    root_logger.addHandler(console_handler)
-    root_logger.addHandler(file_handler)    
 
 
 def main():
@@ -241,7 +211,7 @@ def main():
     )
     args = parser.parse_args()
 
-    init_logging(args.log_level)
+    init_logging(args.log_level, output_dir)
 
     set_global_seed(args.seed)
 

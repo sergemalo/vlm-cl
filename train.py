@@ -3,8 +3,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from transformers import TrainingArguments, AutoProcessor, Qwen2VLForConditionalGeneration
 
-from seed_ctrl import set_global_seed
-from eval import init_logging
+from utils.general.seed_ctrl import set_global_seed
+from utils.general.our_logging import init_logging
 
 from utils.data.dataset import DsAdapterSpatial457PerLevel, SPLIT_NAME_TRAIN, SPLIT_NAME_VALID
 from utils.train.collator import Spatial457Collator
@@ -24,8 +24,8 @@ import argparse
 
 logger      = logging.getLogger(__name__)
 date_prefix = datetime.now().strftime("%Y-%m-%d-%H-%M")
-output_dir  = f"output/{date_prefix}"
-Path(output_dir).mkdir(parents=True, exist_ok=True)
+output_dir  = Path(f"output/{date_prefix}_train")
+output_dir.mkdir(parents=True, exist_ok=True)
 
 
 def init_wandb(cfg: dict):
@@ -158,7 +158,7 @@ def set_parameter_regularizer(model, cfg, collator):
         
 
 def main(args, cfg, model, trainer, collator):
-    init_logging(args.log_level)
+    init_logging(args.log_level, output_dir)
     set_global_seed(args.seed)
     init_wandb(cfg)
     set_trainable_param(model, cfg)
