@@ -41,10 +41,18 @@ class MyTrainer(Trainer):
     def create_optimizer(self):
         if self.optimizer is None:
             optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
+            #logger.info("optim arg:", self.args.optim)
+            #logger.info("optimizer_cls:", optimizer_cls)
+            #logger.info("optimizer_kwargs:", optimizer_kwargs)
 
             trainable_params = [p for p in self.model.parameters() if p.requires_grad]
 
             self.optimizer = optimizer_cls(trainable_params, **optimizer_kwargs)
+
+            trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            logger.info(f"Optimizer: Nb trainable tensors: {len(trainable_params)}")
+            logger.info(f"Optimizer: Nb trainable params: {trainable:,}")
+
 
         return self.optimizer
     
@@ -129,6 +137,10 @@ class MyTrainer(Trainer):
         metric_key_prefix: str = "eval",
     ) -> EvalLoopOutput:
 
+        logger.info("EVAL LOOP")
+        logger.info(f"DESC: {description}")
+        logger.info(f"prediction_loss_only: {prediction_loss_only}")
+
         prediction_loss_only = (
             prediction_loss_only if prediction_loss_only is not None
             else self.args.prediction_loss_only
@@ -136,6 +148,7 @@ class MyTrainer(Trainer):
 
         # Fall back to default loss-only eval if no compute_metrics provided
         if prediction_loss_only or self.compute_metrics is None:
+            logger.warning("Falling back to default loss-only eval")
             return super().evaluation_loop(
                 dataloader, description, prediction_loss_only,
                 ignore_keys, metric_key_prefix,
@@ -209,6 +222,7 @@ class MyTrainer(Trainer):
             f"{metric_key_prefix}_{k}" if not k.startswith(metric_key_prefix) else k: v
             for k, v in metrics.items()
         }
+        logger.info(f"EVAL RESULT METRICS: {metrics}")
         #self.log(metrics)
 
         return EvalLoopOutput(

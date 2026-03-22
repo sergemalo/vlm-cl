@@ -91,6 +91,14 @@ def unfreeze_last_qwen2vl_text_layers(model, num_last_layers=2, train_lm_head=Tr
         for p in model.lm_head.parameters():
             p.requires_grad = True
 
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    logger.info(f"After selection of model params to unfreeze:")
+    logger.info(f"Nb Trainable params: {trainable:,}")
+    logger.info(f"Total params:     {total:,}")
+    logger.info(f"Percent:          {100 * trainable / total:.4f}%")
+
     return total_layers
 
 
@@ -138,7 +146,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_train_epochs", type=int, default=1)
     parser.add_argument("--per_device_train_batch_size", type=int, default=2)
     parser.add_argument("--learning_rate", type=float, default=2e-5)
-    parser.add_argument("--max_grad_norm", type=float, default=1.0)
+    parser.add_argument("--max_grad_norm", type=float, default=0.5)
     #parser.add_argument("--target_layers", type=int, nargs='+', default=[26,27])
     
     args = parser.parse_args()
@@ -208,14 +216,21 @@ if __name__ == "__main__":
         per_device_train_batch_size=cfg["per_device_train_batch_size"],
         per_device_eval_batch_size=1,
         learning_rate=cfg["learning_rate"],
+        lr_scheduler_type="linear", # Default is linear
         max_grad_norm=cfg["max_grad_norm"],
         eval_strategy="epoch",
+        eval_on_start=True,
         save_strategy="no",
         fp16=False,
         bf16=True,         # requires Ampere GPU (RTX 30xx, 40xx)
+        logging_strategy="steps",
         logging_steps=1,
         report_to="wandb",  # ← Trainer logs loss/lr/eval metrics to wandb automatically
         remove_unused_columns=False,
+        weight_decay=0.0,
+        optim="adamw_torch_fused",  # Default is adamw_torch_fused
+        seed=cfg["seed"],
+        data_seed=cfg["seed"]
     )
 
     trainer = MyTrainer(

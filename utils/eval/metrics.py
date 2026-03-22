@@ -1,5 +1,6 @@
 from utils.train.trainer import GenerativeEvalPrediction
 
+
 def normalize_answer(predicted_answer, target_answer):
     # Handle boolean answers (True/False → yes/no)
     if isinstance(predicted_answer, bool):

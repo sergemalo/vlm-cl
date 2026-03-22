@@ -12,7 +12,7 @@ from utils.general.seed_ctrl import set_global_seed
 from utils.general.our_logging import init_logging
 
 logger      = logging.getLogger(__name__)
-date_prefix = datetime.now().strftime("%Y-%m-%d-%H:%M")
+date_prefix = datetime.now().strftime("%Y-%m-%d-%H:%M-%S")
 output_dir  = Path(f"output/{date_prefix}_eval")
 output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -78,8 +78,7 @@ def eval(cfg: dict):
     eval_ds = DsAdapterSpatial457(request_split = SPLIT_NAME_TEST, max_level=cfg["max_level"])
 
     # 2) Load model and processor
-    # TODO: Move model loading to model factory funciton
-    model_id = "Qwen/Qwen2-VL-2B-Instruct"
+    model_id = cfg["model_id"]
     logger.info(f"Loading model: {model_id}")
     model = Qwen2VLForConditionalGeneration.from_pretrained(
         model_id,

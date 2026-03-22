@@ -1,3 +1,7 @@
+import logging
+logger      = logging.getLogger(__name__)
+
+
 SYSTEM_PROMPT = (
     "You are a visual question answering assistant. Answer in one word."
 )
@@ -5,6 +9,7 @@ SYSTEM_PROMPT = (
 class Spatial457Collator:
     def __init__(self, processor):
         self.processor = processor
+        self.counter = 0
 
     def __call__(self, samples: list[dict]) -> dict:
         batch_texts = []
@@ -74,4 +79,20 @@ class Spatial457Collator:
         labels[inputs["input_ids"] == self.processor.tokenizer.pad_token_id] = -100
 
         inputs["labels"] = labels
+
+
+        if self.counter < 0:  # only print first few batches
+            labels = inputs["labels"]
+            valid = (labels != -100).sum().item()
+
+            logger.debug("\n=== DEBUG BATCH ===")
+            logger.debug("valid label tokens:", valid)
+            logger.debug("labels shape:", labels.shape)
+            valid_ids = labels[0][labels[0] != -100].tolist()
+            logger.debug("valid ids:", valid_ids)
+            logger.debug("decoded:", self.processor.tokenizer.decode(valid_ids))
+
+        self.counter += 1
+
+
         return inputs
