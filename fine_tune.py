@@ -77,19 +77,18 @@ def unfreeze_qwen2vl(model,
 
     # LLM Top Layers
     # Qwen2-VL text decoder blocks live here in HF transformers
-    llm_layers = get_llm_layers(model)
-    total_llm_layers = len(llm_layers)
+    if train_llm_top_n_layers > 0:
+        llm_layers = get_llm_layers(model)
+        total_llm_layers = len(llm_layers)
 
-    if total_llm_layers <= 0:
-        raise ValueError("num_last_layers must be >= 1")
-    if train_llm_top_n_layers > total_llm_layers:
-        raise ValueError(
-            f"Requested {train_llm_top_n_layers} LLM layers, but model only has {total_llm_layers}"
-        )
+        if train_llm_top_n_layers > total_llm_layers:
+            raise ValueError(
+                f"Requested {train_llm_top_n_layers} LLM layers, but model only has {total_llm_layers}"
+            )
 
-    for layer in llm_layers[-train_llm_top_n_layers:]:
-        for p in layer.parameters():
-            p.requires_grad = True
+        for layer in llm_layers[-train_llm_top_n_layers:]:
+            for p in layer.parameters():
+                p.requires_grad = True
 
 
     # Optional: unfreeze output head
@@ -111,8 +110,8 @@ def main(args, cfg, model, trainer, collator):
     init_wandb(cfg)
     total_layers = unfreeze_qwen2vl(
         model,
-        train_merger = False,
-        train_llm_top_n_layers = 1, 
+        train_merger = True,
+        train_llm_top_n_layers = 0, 
         train_llm_head = False)
 
     trainer.train()
@@ -197,6 +196,8 @@ if __name__ == "__main__":
 
     processor = AutoProcessor.from_pretrained(MODEL_ID)
     collator  = Spatial457Collator(processor)
+    # This should already be true given your collator code, but verify:
+    assert processor.tokenizer.pad_token_id == 151643
 
 
     # ──────────────────────────────────────────────
@@ -216,11 +217,11 @@ if __name__ == "__main__":
         output_dir=output_dir,
         num_train_epochs=cfg["num_train_epochs"],
         per_device_train_batch_size=cfg["per_device_train_batch_size"],
-        gradient_accumulation_steps=1,
+        gradient_accumulation_steps=8,
         per_device_eval_batch_size=1,
         learning_rate=cfg["learning_rate"],
-        lr_scheduler_type="linear", # Default is linear
-        #warmup_steps = 10,
+        lr_scheduler_type="cosine", # Default is linear
+        warmup_steps = 10,
         max_grad_norm=cfg["max_grad_norm"],
         eval_strategy="epoch",
         eval_on_start=True,
@@ -231,7 +232,7 @@ if __name__ == "__main__":
         logging_steps=1,
         report_to="wandb",  # ← Trainer logs loss/lr/eval metrics to wandb automatically
         remove_unused_columns=False,
-        weight_decay=0.0,
+        weight_decay=0.01,
         optim="adamw_torch_fused",  # Default is adamw_torch_fused
         seed=cfg["seed"],
         data_seed=cfg["seed"]
