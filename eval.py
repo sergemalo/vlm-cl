@@ -12,7 +12,7 @@ from utils.general.seed_ctrl import set_global_seed
 from utils.general.our_logging import init_logging
 
 logger      = logging.getLogger(__name__)
-date_prefix = datetime.now().strftime("%Y-%m-%d-%H:%M-%S")
+date_prefix = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 output_dir  = Path(f"output/{date_prefix}_eval")
 output_dir.mkdir(parents=True, exist_ok=True)
 
