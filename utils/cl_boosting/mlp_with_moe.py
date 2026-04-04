@@ -40,11 +40,6 @@ class MLPWithMoE(nn.Module):
                 alpha.requires_grad = False
             self.alphas[-1].requires_grad = True
  
-        # Freeze past alphas, leave current one trainable
-        for alpha in self.alphas[:-1]:
-            alpha.requires_grad = False
-        self.alphas[-1].requires_grad = True
- 
     def forward(self, x):
         if self.mode == "train":
             alpha = self.alphas[-1]

@@ -9,8 +9,8 @@ from utils.data.dataset import DsAdapterSpatial457PerLevel, SPLIT_NAME_VALID
 from utils.train.collator import Spatial457Collator
 from utils.train.trainer import MyTrainer
 from utils.eval.metrics import compute_metrics
-from utils.cl.mlp_with_moe import MLPWithMoE
-from utils.cl.adapter import Adapter
+from utils.cl_boosting.mlp_with_moe import MLPWithMoE
+from utils.cl_boosting.adapter import Adapter
  
 import wandb
 import logging
@@ -49,20 +49,20 @@ def init_wandb(cfg: dict):
  
 def infer_num_experts(state_dict, layer_idx=1):
     prefix = f"model.language_model.layers.{layer_idx}.mlp.moe.experts."
- 
+
     expert_indices = set()
- 
-    for k in state_dict.keys():
+
+    for k, v in state_dict.items():
+        if not isinstance(v, torch.Tensor):  # skip frozen_experts_map and any other metadata
+            continue
         if k.startswith(prefix):
-            # Extract the expert index i
-            # pattern: experts.i.
             match = re.search(r"experts\.(\d+)\.", k)
             if match:
                 expert_indices.add(int(match.group(1)))
- 
+
     if not expert_indices:
         raise ValueError(f"No experts found for layer {layer_idx}")
- 
+
     return max(expert_indices) + 1
  
  

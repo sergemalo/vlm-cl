@@ -7,7 +7,7 @@ class ExpertRegularizer:
     across all MLPWithMoE layers in the model.
     """
     def __init__(self, model, old_task_dataloader,
-                 lambda_reg=100.0, mode="ewc", device="cpu"):
+                 lambda_reg=100.0, mode="l2", device="cpu"):
         self.lambda_reg = lambda_reg
         self.mode = mode
         self.device = device
@@ -76,7 +76,6 @@ class ExpertRegularizer:
 
 
     def penalty(self):
-        """Call this in the training loop and add to task loss."""
         loss = torch.tensor(0.0, device=self.device)
 
         for name, param in self.param_refs.items():
@@ -85,7 +84,7 @@ class ExpertRegularizer:
 
             if self.mode == "ewc":
                 loss += (self.fisher[name] * deviation).sum()
-            else:                           # simple L2 anchor
+            else:
                 loss += deviation.sum()
 
         return self.lambda_reg * loss
