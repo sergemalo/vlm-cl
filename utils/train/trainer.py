@@ -31,7 +31,8 @@ class MyTrainer(Trainer):
 
         reg_loss = self.regularizer.penalty() if hasattr(self, "regularizer") else 0.0
 
-        #logger.debug(f"TL={task_loss}, RL={reg_loss}")
+        #if self.state.global_step % 250 == 0:
+        #    print(f"step={self.state.global_step} task_loss={task_loss.item():.4f} reg_loss={reg_loss.item():.6f}")
 
         loss = task_loss + reg_loss
 

@@ -1,16 +1,16 @@
 import torch
 import torch.nn as nn
 from transformers import TrainingArguments, AutoProcessor, Qwen2VLForConditionalGeneration
-
-from utils.general.seed_ctrl import set_global_seed
-from utils.general.our_logging import init_logging
-
+ 
+from seed_ctrl import set_global_seed
+from eval import init_logging
+ 
 from utils.data.dataset import DsAdapterSpatial457PerLevel, SPLIT_NAME_VALID
 from utils.train.collator import Spatial457Collator
 from utils.train.trainer import MyTrainer
 from utils.eval.metrics import compute_metrics
-from utils.cl.mlp_with_moe import MLPWithMoE
-from utils.cl.adapter import Adapter
+from utils.cl_boosting.mlp_with_moe import MLPWithMoE
+from utils.cl_boosting.adapter import Adapter
  
 import wandb
 import logging
@@ -23,10 +23,10 @@ import argparse
  
 logger      = logging.getLogger(__name__)
 date_prefix = datetime.now().strftime("%Y-%m-%d-%H-%M")
-output_dir  = Path(f"output/{date_prefix}_eval_with_moe")
-output_dir.mkdir(parents=True, exist_ok=True)
-
-
+output_dir  = f"output/{date_prefix}"
+Path(output_dir).mkdir(parents=True, exist_ok=True)
+ 
+ 
 def init_wandb(cfg: dict):
     wandb.init(
         dir     = output_dir,
@@ -49,20 +49,20 @@ def init_wandb(cfg: dict):
  
 def infer_num_experts(state_dict, layer_idx=1):
     prefix = f"model.language_model.layers.{layer_idx}.mlp.moe.experts."
- 
+
     expert_indices = set()
- 
-    for k in state_dict.keys():
+
+    for k, v in state_dict.items():
+        if not isinstance(v, torch.Tensor):  # skip frozen_experts_map and any other metadata
+            continue
         if k.startswith(prefix):
-            # Extract the expert index i
-            # pattern: experts.i.
             match = re.search(r"experts\.(\d+)\.", k)
             if match:
                 expert_indices.add(int(match.group(1)))
- 
+
     if not expert_indices:
         raise ValueError(f"No experts found for layer {layer_idx}")
- 
+
     return max(expert_indices) + 1
  
  
@@ -190,7 +190,7 @@ def set_trainable_param(model, cfg):
         
  
 def main(args, cfg, model, trainer):
-    init_logging(args.log_level, output_dir)
+    init_logging(args.log_level)
     set_global_seed(args.seed)
     init_wandb(cfg)
     set_trainable_param(model, cfg)
