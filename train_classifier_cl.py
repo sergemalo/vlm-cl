@@ -343,7 +343,7 @@ def main():
 
         # Evaluation & checkpointing
         eval_strategy="epoch",
-        save_strategy="no",
+        save_strategy="epoch",
         load_best_model_at_end=True,
         metric_for_best_model="accuracy",
         greater_is_better=True,
