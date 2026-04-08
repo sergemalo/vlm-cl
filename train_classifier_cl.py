@@ -53,10 +53,10 @@ CONFIGS = [
     "L1_single",
     "L2_objects",
     "L3_2D_spatial",
-    "L4_occ",
+#    "L4_occ",
     "L4_pose",
     "L5_6d_spatial",
-    "L5_collision",
+#    "L5_collision",
 ]
 LABEL2ID = {c: i for i, c in enumerate(CONFIGS)}
 ID2LABEL = {i: c for i, c in enumerate(CONFIGS)}
@@ -67,10 +67,10 @@ CONFIG_TO_LEVEL = {
     "L1_single": 1,
     "L2_objects": 2,
     "L3_2D_spatial": 3,
-    "L4_occ": 4,
+#    "L4_occ": 4,
     "L4_pose": 4,
     "L5_6d_spatial": 5,
-    "L5_collision": 5,
+#    "L5_collision": 5,
 }
 
 ENCODER_NAME = "sentence-transformers/all-MiniLM-L6-v2"
@@ -210,12 +210,7 @@ class QuestionSample:
 
 
 class SpatialDatasetHF(Dataset):
-#    def __init__(self, samples: list[QuestionSample], tokenizer, max_length: int = MAX_LENGTH):
-#        self.samples = samples
-#        self.tokenizer = tokenizer
-#        self.max_length = max_length
-
-    def __init__(self, spatial457_ds: DsAdapterSpatial457, tokenizer, max_length: int = MAX_LENGTH):
+    def __init__(self, spatial457_ds: DsAdapterSpatial457, tokenizer, max_length: int = MAX_LENGTH, log_samples: bool = False):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.samples = []
@@ -225,6 +220,8 @@ class SpatialDatasetHF(Dataset):
                 question=s["question"],
                 label=LABEL2ID[s["level"]],
             )
+            if log_samples:
+                logger.debug(f"{qs}")
             self.samples.append(qs)
 
     def __len__(self):
@@ -268,6 +265,15 @@ def compute_metrics(eval_pred):
     return {**acc, **per_class}
 
 
+def print_confusion_matrix(preds, labels):
+    from sklearn.metrics import confusion_matrix, classification_report
+    import numpy as np
+
+    logger.info("Classification Report:")
+    logger.info("\n" + classification_report(labels, preds, target_names=CONFIGS))
+    logger.info("Confusion Matrix:")
+    logger.info("\n" + str(confusion_matrix(labels, preds)))
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -305,10 +311,6 @@ def main():
     init_wandb(vars(args))
     logger.info("Initializing WandB done.")
 
-    # DEVICE SETUP
-    #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    #logger.info(f"Using device: {device}")
-
     # --- Tokenizer & model ---
     logger.info(f"Tokenizer: {args.encoder_name}")
     tokenizer = AutoTokenizer.from_pretrained(args.encoder_name)
@@ -330,6 +332,7 @@ def main():
     train_dataset_hf = SpatialDatasetHF(train_ds, tokenizer)
     val_dataset_hf = SpatialDatasetHF(valid_ds, tokenizer)
     logger.info(f"Train samples: {len(train_dataset_hf)}, Val samples: {len(val_dataset_hf)}")
+
 
     training_args = TrainingArguments(
         output_dir=args.output_dir,
@@ -379,6 +382,14 @@ def main():
     logger.info("Final evaluation results:")
     for k, v in results.items():
         logger.info(f"  {k}: {v:.4f}" if isinstance(v, float) else f"  {k}: {v}")
+
+
+    # Get predictions on val set
+    predictions = trainer.predict(val_dataset_hf)
+    preds = np.argmax(predictions.predictions, axis=-1)
+    labels = predictions.label_ids
+    print_confusion_matrix(preds, labels)
+
 
 
 if __name__ == "__main__":
