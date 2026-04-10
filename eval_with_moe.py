@@ -8,6 +8,7 @@ from eval import init_logging
 from utils.data.dataset import DsAdapterSpatial457PerLevel, SPLIT_NAME_VALID
 from utils.train.collator import Spatial457Collator
 from utils.train.trainer import MyTrainer
+from utils.train.trainer_w_classifier import MyTrainerWithClassifier
 from utils.eval.metrics import compute_metrics
 from utils.cl.mlp_with_moe import MLPWithMoE
 from utils.cl.adapter import Adapter
@@ -159,6 +160,7 @@ def set_trainable_param(model, cfg):
                 alpha_idx += 1
             existing_alphas_by_layer[layer_idx] = alphas
  
+    mlps_with_moe = []
     for layer_idx in range(cfg["target_layers"][0], cfg["target_layers"][1]+1):
         original_mlp = model.model.language_model.layers[layer_idx].mlp
         existing_experts = existing_experts_by_layer.get(layer_idx, [])
@@ -176,7 +178,7 @@ def set_trainable_param(model, cfg):
             existing_routers=existing_routers,
             existing_alphas=existing_alphas,
             mode="eval",
-            level_id=extract_level_id(cfg["level"])
+            level_id=extract_level_id(cfg["level"]),
         )
  
         new_mlp.moe.to(dtype=model_dtype, device=model_device)
@@ -186,6 +188,13 @@ def set_trainable_param(model, cfg):
         model.model.language_model.layers[layer_idx].mlp = new_mlp
         for alpha in model.model.language_model.layers[layer_idx].mlp.alphas:
             alpha.requires_grad = False
+
+        mlps_with_moe.append(new_mlp)
+        
+
+    #logger.info(f"Set {sum(p.numel() for p in model.parameters() if p.requires_grad)} parameters to require grad")
+    #logger.info(f"Existing experts by layer: { {layer: len(experts) for layer, experts in existing_experts_by_layer.items()} }")
+    return mlps_with_moe
  
         
  
@@ -193,8 +202,13 @@ def main(args, cfg, model, trainer):
     init_logging(args.log_level)
     set_global_seed(args.seed)
     init_wandb(cfg)
-    set_trainable_param(model, cfg)
+    mlps_with_moe = set_trainable_param(model, cfg)
+
+    if type(trainer) is MyTrainerWithClassifier:
+        trainer.set_mlps_with_moe(mlps_with_moe)
     
+    logger.info(f"Model loaded with {sum(p.numel() for p in model.parameters() if p.requires_grad)} trainable parameters")
+    logger.info("Starting evaluation...")
     trainer.evaluate()
  
     wandb.finish()
@@ -214,6 +228,7 @@ if __name__ == "__main__":
  
     parser.add_argument("--target_layers", type=int, nargs='+', default=[1,27])
     parser.add_argument("--past_adapters_path", type=str)
+    parser.add_argument("--classifier_path", type=str, default="")
     parser.add_argument("--top_k", type=int, default=2)
     
     args = parser.parse_args()
@@ -226,7 +241,7 @@ if __name__ == "__main__":
  
     model = Qwen2VLForConditionalGeneration.from_pretrained(
         MODEL_ID,
-        torch_dtype=torch.float16,
+        dtype=torch.float16,
         device_map="auto",
     )
  
@@ -281,14 +296,25 @@ if __name__ == "__main__":
         report_to="wandb",  # ← Trainer logs loss/lr/eval metrics to wandb automatically
         remove_unused_columns=False,
     )
- 
-    trainer = MyTrainer(
-        model=model,
-        args=training_args,
-        eval_dataset=eval_dataset,
-        processing_class=processor,
-        data_collator=collator,
-        compute_metrics=compute_metrics,
-    )
+    
+    if args.classifier_path:
+        trainer = MyTrainerWithClassifier(
+            model=model,
+            args=training_args,
+            eval_dataset=eval_dataset,
+            processing_class=processor,
+            data_collator=collator,
+            compute_metrics=compute_metrics,
+        )
+        trainer.load_classifier(args.classifier_path)
+    else:
+        trainer = MyTrainer(
+            model=model,
+            args=training_args,
+            eval_dataset=eval_dataset,
+            processing_class=processor,
+            data_collator=collator,
+            compute_metrics=compute_metrics,
+        )
  
     main(args, cfg, model, trainer)
