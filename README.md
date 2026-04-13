@@ -18,7 +18,7 @@ By:
 
 
 # Project results
-See our [poster](curriculumoe_poster.pdf) presented on April 16th 2026 at Mila.  
+See our [poster](https://github.com/sergemalo/vlm-cl/blob/main/curriculumoe_poster.pdf) presented on April 16th 2026 at Mila.  
 [Examples and references available here.](https://tranquil-metatarsal-615.notion.site/CurriculuMoE-1890c4b9239d80ada024e952b89cdcac?source=copy_link)  
 
 ---
