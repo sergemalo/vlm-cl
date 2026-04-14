@@ -13,7 +13,7 @@ from utils.general.our_logging import init_logging
 
 logger      = logging.getLogger(__name__)
 date_prefix = datetime.now().strftime("%Y-%m-%d-%H-%M")
-output_dir  = f"output/{date_prefix}"
+output_dir  = f"output/{date_prefix}_eval"
 log_file    = f"{output_dir}/run.log"
 os.mkdir(output_dir)
 
@@ -81,8 +81,7 @@ def eval(cfg: dict):
     eval_ds = DsAdapterSpatial457(request_split = SPLIT_NAME_TEST, max_level=cfg["max_level"])
 
     # 2) Load model and processor
-    # TODO: Move model loading to model factory funciton
-    model_id = "Qwen/Qwen2-VL-2B-Instruct"
+    model_id = cfg["model_id"]
     logger.info(f"Loading model: {model_id}")
     model = Qwen2VLForConditionalGeneration.from_pretrained(
         model_id,

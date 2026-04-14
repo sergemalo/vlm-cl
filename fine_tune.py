@@ -47,7 +47,7 @@ def freeze_all_params(model):
     for p in model.parameters():
         p.requires_grad = False
 
-def get_text_layers(model):
+def get_llm_layers(model):
     """
     Robustly retrieve the text decoder layers for Qwen2-VL.
     """
@@ -58,52 +58,61 @@ def get_text_layers(model):
             "Could not find text layers. Inspect model structure with print(model)"
         )
 
-def unfreeze_last_qwen2vl_text_layers(model, num_last_layers=2, train_lm_head=True):
-    """
-    Freeze everything, then unfreeze only the last `num_last_layers`
-    of the text backbone, plus optionally the lm_head.
-    """
+def unfreeze_qwen2vl(model,
+                    train_merger: bool,
+                    train_llm_top_n_layers: int, 
+                    train_llm_head: bool):
     freeze_all_params(model)
 
+    logger.info("Fine-tuning Strategy:")
+    logger.info(f"Unfreeze vision-language merger: {train_merger}")
+    logger.info(f"Unfreeze LLM Top n Layers:  {train_llm_top_n_layers}")
+    logger.info(f"Unfreeze LLM Head:  {train_llm_head}")
+
+    # Merger
+    if train_merger:
+        for param in model.model.visual.merger.parameters():
+            param.requires_grad = True
+
+
+    # LLM Top Layers
     # Qwen2-VL text decoder blocks live here in HF transformers
-    text_layers = get_text_layers(model)
-    total_layers = len(text_layers)
+    if train_llm_top_n_layers > 0:
+        llm_layers = get_llm_layers(model)
+        total_llm_layers = len(llm_layers)
 
-    if num_last_layers <= 0:
-        raise ValueError("num_last_layers must be >= 1")
-    if num_last_layers > total_layers:
-        raise ValueError(
-            f"Requested {num_last_layers} layers, but model only has {total_layers}"
-        )
+        if train_llm_top_n_layers > total_llm_layers:
+            raise ValueError(
+                f"Requested {train_llm_top_n_layers} LLM layers, but model only has {total_llm_layers}"
+            )
 
-    # Unfreeze last N decoder blocks
-    for layer in text_layers[-num_last_layers:]:
-        for p in layer.parameters():
-            p.requires_grad = True
+        for layer in llm_layers[-train_llm_top_n_layers:]:
+            for p in layer.parameters():
+                p.requires_grad = True
 
-    # Optional: unfreeze final norm
-    if hasattr(model.model, "norm"):
-        for p in model.model.norm.parameters():
-            p.requires_grad = True
 
     # Optional: unfreeze output head
-    if train_lm_head and hasattr(model, "lm_head"):
+    if train_llm_head:
         for p in model.lm_head.parameters():
             p.requires_grad = True
 
-    return total_layers
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    logger.info(f"After selection of model params to unfreeze:")
+    logger.info(f"Nb Trainable params: {trainable:,}")
+    logger.info(f"Total params:     {total:,}")
+    logger.info(f"Percent:          {100 * trainable / total:.4f}%")
 
 
 def main(args, cfg, model, trainer, collator):
     init_logging(args.log_level, output_dir)
     init_wandb(cfg)
-    total_layers = unfreeze_last_qwen2vl_text_layers(
+    total_layers = unfreeze_qwen2vl(
         model,
-        num_last_layers=1,
-        train_lm_head=False,
-    )
-
-    logger.info(f"Total text layers: {total_layers}")
+        train_merger = True,
+        train_llm_top_n_layers = 0, 
+        train_llm_head = False)
 
     trainer.train()
 
@@ -137,8 +146,8 @@ if __name__ == "__main__":
 
     parser.add_argument("--num_train_epochs", type=int, default=1)
     parser.add_argument("--per_device_train_batch_size", type=int, default=2)
-    parser.add_argument("--learning_rate", type=float, default=2e-5)
-    parser.add_argument("--max_grad_norm", type=float, default=1.0)
+    parser.add_argument("--learning_rate", type=float, default=1e-6)
+    parser.add_argument("--max_grad_norm", type=float, default=0.5)
     #parser.add_argument("--target_layers", type=int, nargs='+', default=[26,27])
     
     args = parser.parse_args()
@@ -187,6 +196,8 @@ if __name__ == "__main__":
 
     processor = AutoProcessor.from_pretrained(MODEL_ID)
     collator  = Spatial457Collator(processor)
+    # This should already be true given your collator code, but verify:
+    assert processor.tokenizer.pad_token_id == 151643
 
 
     # ──────────────────────────────────────────────
@@ -206,16 +217,25 @@ if __name__ == "__main__":
         output_dir=output_dir,
         num_train_epochs=cfg["num_train_epochs"],
         per_device_train_batch_size=cfg["per_device_train_batch_size"],
+        gradient_accumulation_steps=8,
         per_device_eval_batch_size=1,
         learning_rate=cfg["learning_rate"],
+        lr_scheduler_type="cosine", # Default is linear
+        warmup_steps = 10,
         max_grad_norm=cfg["max_grad_norm"],
         eval_strategy="epoch",
+        eval_on_start=True,
         save_strategy="no",
         fp16=False,
         bf16=True,         # requires Ampere GPU (RTX 30xx, 40xx)
+        logging_strategy="steps",
         logging_steps=1,
         report_to="wandb",  # ← Trainer logs loss/lr/eval metrics to wandb automatically
         remove_unused_columns=False,
+        weight_decay=0.01,
+        optim="adamw_torch_fused",  # Default is adamw_torch_fused
+        seed=cfg["seed"],
+        data_seed=cfg["seed"]
     )
 
     trainer = MyTrainer(

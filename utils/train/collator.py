@@ -1,3 +1,7 @@
+import logging
+logger      = logging.getLogger(__name__)
+
+
 SYSTEM_PROMPT = (
     "You are a visual question answering assistant. Answer in one word."
 )
@@ -5,6 +9,7 @@ SYSTEM_PROMPT = (
 class Spatial457Collator:
     def __init__(self, processor):
         self.processor = processor
+        self.counter = 0
 
     def __call__(self, samples: list[dict]) -> dict:
         batch_texts = []
@@ -55,6 +60,7 @@ class Spatial457Collator:
         )
         assistant_len = len(assistant_ids)
 
+        samples_with_no_unmasked_tokens = 0
         for i in range(len(samples)):
             input_ids_i = inputs["input_ids"][i].tolist()
 
@@ -67,13 +73,39 @@ class Spatial457Collator:
 
             if answer_start is None:
                 labels[i, :] = -100  # fallback: mask everything
+                logger.warning(f"Assistant header not found for sample {i}")
             else:
                 labels[i, :answer_start] = -100
+
+
+            unmasked = (labels[i] != -100).sum().item()
+            if unmasked == 0:
+                samples_with_no_unmasked_tokens = samples_with_no_unmasked_tokens +1 
+        
+        if samples_with_no_unmasked_tokens > 0:
+            logger.warning(f"Found {samples_with_no_unmasked_tokens} samples with no unmasked tokens (empty answer)")
+
 
         # 5. Also mask padding tokens in labels
         labels[inputs["input_ids"] == self.processor.tokenizer.pad_token_id] = -100
 
         inputs["labels"] = labels
+
+
+        if self.counter < 0:  # only print first few batches
+            labels = inputs["labels"]
+            valid = (labels != -100).sum().item()
+
+            logger.debug("\n=== DEBUG BATCH ===")
+            logger.debug("valid label tokens:", valid)
+            logger.debug("labels shape:", labels.shape)
+            valid_ids = labels[0][labels[0] != -100].tolist()
+            logger.debug("valid ids:", valid_ids)
+            logger.debug("decoded:", self.processor.tokenizer.decode(valid_ids))
+
+        self.counter += 1
+
+
 
         # Keep raw question strings for the classifier
         inputs["questions"] = [sample["question"] for sample in samples]
