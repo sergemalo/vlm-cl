@@ -5,112 +5,139 @@ from utils.cl.adapter import Adapter
 class MoEAdapter(nn.Module):
     """Class for Mixture-of-Expert"""
 
-    def __init__(self, d_model, num_experts=8, rank=16, top_k=2, dropout=0.0, 
-                 existing_experts=None, existing_routers=None, mode="train", level_id=None,
-                 anneal_steps=5000, init_bonus=3.0):
-        """
-        existing_experts:           Experts initialized previously to be re-used 
-                                    (i.e. we want to train for a more complex task and re-use experts
-                                    defined previously)
-        
-        existing_routers:           Routers initialized for the previous-tasks
-                                    (the Experts are in the same order for every task, but each Router
-                                    can only select the Experts that were defined for this task, i.e.
-                                    the self.num_experts is the number of indices the Router can output
-                                    but it changes for every task)
-
-        mode:                       Used to select the appropriate Router
-
-        level_id:                   When mode is eval, used to select the appropriate router
-
-        anneal_steps/init_bonus:    Used to guide routing towards new Experts early on
-        """
+    def __init__(self, d_model, new_expert_count=2, rank=16, top_k=2, old_experts=None, old_routers=None, 
+                 mode="train", level_id=None, anneal_steps=5000, init_bonus=3.0):
         super().__init__()
 
-        # Expert-related hyperparameters
-        self.num_experts = num_experts
+        self.new_expert_count = new_expert_count
         self.rank = rank
         self.top_k = top_k
         self.mode = mode
         self.level_id = level_id
 
-        # Cold start Routing-related hyperparameters
-        self.num_old_experts = len(existing_experts or [])
-        self.init_bonus = init_bonus
-        self.anneal_steps = anneal_steps
-        self.register_buffer("current_step", torch.tensor(0))
+        self._weight_tracker = {}
 
         # ----- Experts -----
-        existing_experts = existing_experts or []
-        assert len(existing_experts) <= num_experts, "More existing experts than num_experts"
+        old_experts = old_experts or []
 
-        # Freeze old experts by default
-        # If used, ExpertRegularizer (see expertregularizer.py) will un-freeze and apply Parameter Regularization
-        for expert in existing_experts:
-            for param in expert.parameters():
-                param.requires_grad = False
+        # Freeze old Experts by default (not the case when fixed set)
+        if mode == "train":
+            for expert in old_experts:
+                for param in expert.parameters():
+                    param.requires_grad = False
 
-        # Keep old experts, add the new Experts for this task
+        # Keep old Experts, add the new Experts for this task
         new_experts = [
-            Adapter(d_model=d_model, rank=self.rank, dropout=dropout)
-            for _ in range(num_experts - len(existing_experts))
+            Adapter(d_model=d_model, rank=self.rank)
+            for _ in range(new_expert_count)
         ]
-        self.experts = nn.ModuleList(existing_experts + new_experts)
+        self.experts = nn.ModuleList(old_experts + new_experts)
         for expert in new_experts:
             for param in expert.parameters():
                 param.requires_grad = True
 
         # ----- Routers -----
-        existing_routers = existing_routers or []
+        old_routers = old_routers or []
 
-        # Freeze old Routers (technically unecessary as never used during training)
-        for router in existing_routers:
+        # Freeze old Routers (never used during training)
+        for router in old_routers:
             for param in router.parameters():
                 param.requires_grad = False
 
         # Initialize new Router and add it to the list of Routers
-        new_router = nn.Linear(d_model, self.num_experts)
-        self.routers = nn.ModuleList(existing_routers + [new_router])
-        for param in new_router.parameters():
-            param.requires_grad = True
+        if ("train" in mode):
+            new_router = [nn.Linear(d_model, len(old_experts) + new_expert_count)] # has requires_grad by default
+        else:
+            new_router = []
+
+        self.routers = nn.ModuleList(old_routers + new_router)
+
+        # Cold start Routing-related hyperparameters
+        self.old_expert_count = len(old_experts)
+        self.init_bonus = init_bonus
+        self.anneal_steps = anneal_steps
+        self.register_buffer("current_step", torch.tensor(0))
 
     
     def _get_boosted_logits(self, logits):
         """
-        Boost new expert logits early in training, annealing to 0.
+        Boost new Expert logits early in training, annealing to 0.
         Old experts are still selectable — we're leveling the field, not excluding them.
         """
-        if self.mode != "train":
-            return logits
-
         self.current_step += 1
         progress = min(self.current_step.item() / self.anneal_steps, 1.0)
         bonus = self.init_bonus * (1.0 - progress)  # linear decay to 0
 
         boosted = logits.clone()
-        boosted[..., self.num_old_experts:] = boosted[..., self.num_old_experts:] + bonus
-        #if self.current_step % 50 == 0:
-        #    print("BOOSTED: ", boosted)
+        boosted[..., self.old_expert_count:] = boosted[..., self.old_expert_count:] + bonus
         return boosted
     
 
-    def forward(self, x):
-        # x: [batch, seq, d_model] (# sequences, # tokens/sequence, dimension of each token)
+    def _init_tracker(self, level_id):
+        """Used when monitoring the importance of old vs new Experts"""
+        if level_id not in self._weight_tracker:
+            self._weight_tracker[level_id] = {
+                "old": {"sum": 0.0, "count": 0},
+                "new": {"sum": 0.0, "count": 0},
+            }
 
-        # Select the appropriate router
-        # During training mode: Router is the new one (all inputs belong to new task)
-        if self.mode == "train":
+    def reset_routing_stats(self, level_id=None):
+        """Clear accumulators for one level (or all levels if level_id is None)."""
+        if level_id is None:
+            self._weight_tracker.clear()
+        elif level_id in self._weight_tracker:
+            del self._weight_tracker[level_id]
+
+
+    def get_routing_stats(self, level_id=None):
+        """
+        Returns {"old_avg": float, "new_avg": float} for the given level_id
+        (defaults to self.level_id).  Returns None for a bucket with no data.
+        """
+        lid = level_id if level_id is not None else self.level_id
+        if lid not in self._weight_tracker:
+            return None
+        t = self._weight_tracker[lid]
+        old_avg = t["old"]["sum"] / t["old"]["count"] if t["old"]["count"] else 0.0
+        new_avg = t["new"]["sum"] / t["new"]["count"] if t["new"]["count"] else 0.0
+        return {"old_avg": old_avg, "new_avg": new_avg}
+    
+
+    def measure_routing_importance(self, topk_vals, topk_idx):
+        """
+        Measure importance of Old vs New Experts
+        Importance is measure by sum of normalized top-k logits over each group
+        """
+        with torch.no_grad():
+            self._init_tracker(self.level_id)
+            t = self._weight_tracker[self.level_id]
+
+            # For each token, sum the gate weights going to old vs new experts
+            # topk_idx: [B, S, top_k], topk_vals: [B, S, top_k]
+            is_new = (topk_idx > 2 + 2*self.level_id)          
+            
+            new_weight = (topk_vals * is_new).sum(dim=-1)       
+            old_weight = (topk_vals * ~is_new).sum(dim=-1)      
+
+            t["new"]["sum"]   += new_weight.sum().item()
+            t["new"]["count"] += new_weight.numel()
+            t["old"]["sum"]   += old_weight.sum().item()
+            t["old"]["count"] += old_weight.numel()
+    
+
+    def forward(self, x):
+        # Training mode: Oracle (the input belongs to the new task)
+        if "train" in self.mode:
             router = self.routers[-1]
         
-        # At inference, figure out the appropriate Router (batch of 1)
+        # Inference: Classifier (the classifier outputs the corresponding level_id)
         else:
-            #router_idx = -1 # TODO: At inference, find the appropriate router (probably simple classifier)
             router = self.routers[self.level_id]
 
         # Weight all of the Experts
         logits = router(x)
-        logits = self._get_boosted_logits(logits) # to avoid Expert collapse
-        #logits = logits.clamp(-10, 10)  # prevent softmax collapse from exploding logits
+        if self.mode == "train":
+            logits = self._get_boosted_logits(logits) # to avoid Expert collapse (only with growing set)
         gates = torch.softmax(logits, dim=-1)
 
         # Find the top-k Experts
@@ -118,40 +145,26 @@ class MoEAdapter(nn.Module):
 
         # Re-normalize top-k weights so they sum to 1
         topk_vals = topk_vals / topk_vals.sum(dim=-1, keepdim=True)
-
+        
         # Process input with top-k Experts
         output = torch.zeros_like(x)
-        num_experts_for_task = router.out_features          # The number of Experts changes depending on the task
-        for expert_id in range(num_experts_for_task):       # only iterate over visible experts
+        expert_for_task_count = router.out_features          
+        for expert_id in range(expert_for_task_count):       
             expert = self.experts[expert_id]
 
             # Check if this Expert is in the top-k of any input token
-            mask = (topk_idx == expert_id)  # [batch, seq, top_k]
+            mask = (topk_idx == expert_id)
             if not mask.any():
                 continue
 
-            expert_out = expert(x)  # [batch, seq, d_model]
+            expert_out = expert(x) 
 
             # Sum the gate weights for this expert across top_k slots
-            weight = (topk_vals * mask).sum(dim=-1)  # [batch, seq]
+            weight = (topk_vals * mask).sum(dim=-1) 
             output += weight.unsqueeze(-1) * expert_out
 
+        # Keep track of the Expert importance
+        if self.mode == "eval_weight_tracker":
+            self.measure_routing_importance(topk_vals, topk_idx)
+        
         return output
-    
-
-"""
-Example usage across training tasks:
-
-# Task 1
-moe_v1 = MoEAdapter(d_model, num_experts=4)
-
-# Task 2
-moe_v2 = MoEAdapter(d_model, num_experts=8,
-                    existing_experts=list(moe_v1.experts),
-                    existing_routers=list(moe_v1.routers))
-
-# Task 3
-moe_v3 = MoEAdapter(d_model, num_experts=12,
-                    existing_experts=list(moe_v2.experts),
-                    existing_routers=list(moe_v2.routers))
-"""

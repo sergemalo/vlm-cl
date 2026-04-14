@@ -11,7 +11,7 @@ from ds_adapter_spatial457 import *
 from seed_ctrl import set_global_seed
 
 logger      = logging.getLogger(__name__)
-date_prefix = datetime.now().strftime("%Y-%m-%d-%H:%M")
+date_prefix = datetime.now().strftime("%Y-%m-%d-%H-%M")
 output_dir  = f"output/{date_prefix}"
 log_file    = f"{output_dir}/run.log"
 os.mkdir(output_dir)
@@ -54,6 +54,7 @@ def init_wandb(cfg: dict):
     wandb.init(
         dir     = output_dir,
         project = "vlm-cl-qwen-2b",
+        entity = "vlm-cl",
         name    = date_prefix + "eval",
         config  = cfg
     )

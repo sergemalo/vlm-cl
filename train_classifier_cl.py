@@ -55,7 +55,7 @@ CONFIGS = [
     "L3_2D_spatial",
 #    "L4_occ",
     "L4_pose",
-    "L5_6d_spatial",
+    #"L5_6d_spatial",
 #    "L5_collision",
 ]
 LABEL2ID = {c: i for i, c in enumerate(CONFIGS)}
@@ -327,8 +327,8 @@ def main():
             param.requires_grad = False
 
     logger.info("Loading dataset..")
-    train_ds = DsAdapterSpatial457(request_split = SPLIT_NAME_TRAIN, max_level=5)
-    valid_ds = DsAdapterSpatial457(request_split = SPLIT_NAME_VALID, max_level=5)
+    train_ds = DsAdapterSpatial457(request_split = SPLIT_NAME_TRAIN, max_level=2)
+    valid_ds = DsAdapterSpatial457(request_split = SPLIT_NAME_VALID, max_level=2)
     train_dataset_hf = SpatialDatasetHF(train_ds, tokenizer)
     val_dataset_hf = SpatialDatasetHF(valid_ds, tokenizer)
     logger.info(f"Train samples: {len(train_dataset_hf)}, Val samples: {len(val_dataset_hf)}")

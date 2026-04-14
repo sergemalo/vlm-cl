@@ -20,6 +20,7 @@ from pathlib import Path
 import re
  
 import argparse
+from collections import defaultdict
  
  
 logger      = logging.getLogger(__name__)
@@ -48,34 +49,27 @@ def init_wandb(cfg: dict):
     )
  
  
-def infer_num_experts(state_dict, layer_idx=1):
+def retrieve_old_adapter_info(state_dict, layer_idx=1):
+    """Retrieves old adapter information (for logging)"""
+
     prefix = f"model.language_model.layers.{layer_idx}.mlp.moe.experts."
  
     expert_indices = set()
+    rank = None
  
-    for k in state_dict.keys():
+    for k, v in state_dict.items():
         if k.startswith(prefix):
-            # Extract the expert index i
-            # pattern: experts.i.
             match = re.search(r"experts\.(\d+)\.", k)
             if match:
                 expert_indices.add(int(match.group(1)))
+        
+        if (rank is None) and (k.startswith(prefix)) and (k.endswith("down_proj.weight")):
+            rank = v.shape[0]   # [rank, d_model]
  
     if not expert_indices:
         raise ValueError(f"No experts found for layer {layer_idx}")
  
-    return max(expert_indices) + 1
- 
- 
-def infer_rank(state_dict, layer_idx=1):
-    prefix = f"model.language_model.layers.{layer_idx}.mlp.moe.experts."
- 
-    for k, v in state_dict.items():
-        if k.startswith(prefix) and k.endswith("down_proj.weight"):
-            rank = v.shape[0]   # [rank, d_model]
-            return rank
- 
-    raise ValueError(f"Could not find down_proj.weight for layer {layer_idx}")
+    return max(expert_indices) + 1, rank
  
  
 def extract_level_id(name: str) -> int:
@@ -89,54 +83,67 @@ def set_trainable_param(model, cfg):
     model_dtype = next(p for p in model.parameters() if p.device.type != 'meta').dtype
     model_device = next(p for p in model.parameters() if p.device.type != 'meta').device
  
-    # Load existing experts and routers if provided
-    existing_experts_by_layer = {}
-    existing_routers_by_layer = {}
-    existing_alphas_by_layer  = {}
+    # Load old experts and routers if provided
+    old_experts_by_layer = {}
+    old_routers_by_layer = {}
+    old_alphas_by_layer  = {}
+
     if cfg.get("past_adapters_path") is not None:
         saved = torch.load(cfg["past_adapters_path"])
+
         for layer_idx in range(cfg["target_layers"][0], cfg["target_layers"][1]+1):
  
             # ── Experts ──────────────────────────────────────────
             prefix = f"model.language_model.layers.{layer_idx}.mlp.moe.experts."
+
             layer_state = {
                 k[len(prefix):]: v
                 for k, v in saved.items()
                 if k.startswith(prefix)
             }
+
             experts = []
             expert_idx = 0
+
             while True:
                 expert_keys = {
                     k[len(f"{expert_idx}."):]: v
                     for k, v in layer_state.items()
                     if k.startswith(f"{expert_idx}.")
                 }
+
                 if not expert_keys:
                     break
+
                 expert = Adapter(d_model=cfg["d_model"], rank=cfg["moe_rank"])
                 expert.load_state_dict(expert_keys)
                 experts.append(expert)
                 expert_idx += 1
-            existing_experts_by_layer[layer_idx] = experts
+
+            old_experts_by_layer[layer_idx] = experts
  
             # ── Routers ──────────────────────────────────────────
             prefix = f"model.language_model.layers.{layer_idx}.mlp.moe.routers."
+
             layer_state = {
                 k[len(prefix):]: v
                 for k, v in saved.items()
                 if k.startswith(prefix)
             }
+
             routers = []
             router_idx = 0
+
             while True:
                 router_keys = {
                     k[len(f"{router_idx}."):]: v
                     for k, v in layer_state.items()
                     if k.startswith(f"{router_idx}.")
                 }
+
                 if not router_keys:
                     break
+
                 # --- Infer dimensions from checkpoint ---
                 weight = router_keys["weight"]
                 out_features, in_features = weight.shape
@@ -146,38 +153,42 @@ def set_trainable_param(model, cfg):
                 router.load_state_dict(router_keys)
                 routers.append(router)
                 router_idx += 1
-            existing_routers_by_layer[layer_idx] = routers
+
+            old_routers_by_layer[layer_idx] = routers
  
             # ── Alphas ───────────────────────────────────────────
             alphas = []
             alpha_idx = 0
+
             while True:
                 key = f"model.language_model.layers.{layer_idx}.mlp.alphas.{alpha_idx}"
                 if key not in saved:
                     break
+
                 alpha = nn.Parameter(saved[key].clone())
                 alphas.append(alpha)
                 alpha_idx += 1
-            existing_alphas_by_layer[layer_idx] = alphas
+
+            old_alphas_by_layer[layer_idx] = alphas
  
     mlps_with_moe = []
+
     for layer_idx in range(cfg["target_layers"][0], cfg["target_layers"][1]+1):
         original_mlp = model.model.language_model.layers[layer_idx].mlp
-        existing_experts = existing_experts_by_layer.get(layer_idx, [])
-        existing_routers = existing_routers_by_layer.get(layer_idx, [])
-        existing_alphas  = existing_alphas_by_layer.get(layer_idx, None)
+        old_experts = old_experts_by_layer.get(layer_idx, [])
+        old_routers = old_routers_by_layer.get(layer_idx, [])
+        old_alphas  = old_alphas_by_layer.get(layer_idx, None)
  
         # Parameter gradient set to True inside MoE class
         new_mlp = MLPWithMoE(
             mlp=original_mlp,
             d_model=cfg["d_model"],
-            num_experts=cfg["num_experts"],
             rank=cfg["moe_rank"],
             top_k=cfg["top_k"],
-            existing_experts=existing_experts,
-            existing_routers=existing_routers,
-            existing_alphas=existing_alphas,
-            mode="eval",
+            old_experts=old_experts,
+            old_routers=old_routers,
+            old_alphas=old_alphas,
+            mode=args.mode,
             level_id=extract_level_id(cfg["level"]),
         )
  
@@ -191,13 +202,9 @@ def set_trainable_param(model, cfg):
 
         mlps_with_moe.append(new_mlp)
         
-
-    #logger.info(f"Set {sum(p.numel() for p in model.parameters() if p.requires_grad)} parameters to require grad")
-    #logger.info(f"Existing experts by layer: { {layer: len(experts) for layer, experts in existing_experts_by_layer.items()} }")
     return mlps_with_moe
  
         
- 
 def main(args, cfg, model, trainer):
     init_logging(args.log_level)
     set_global_seed(args.seed)
@@ -210,7 +217,28 @@ def main(args, cfg, model, trainer):
     logger.info(f"Model loaded with {sum(p.numel() for p in model.parameters() if p.requires_grad)} trainable parameters")
     logger.info("Starting evaluation...")
     trainer.evaluate()
- 
+
+    # Print expert distribution across all MoE layers
+    if args.mode == "eval_weight_tracker":
+
+        # Collect all level_ids that have accumulated stats (use any layer as reference)
+        seen_level_ids = list(mlps_with_moe[0].moe._weight_tracker.keys())
+
+        for level_id in seen_level_ids:
+            total = defaultdict(lambda: {"sum": 0.0, "count": 0})
+
+            for mlp in mlps_with_moe:
+                tracker = mlp.moe._weight_tracker.get(level_id)
+                if tracker is None:
+                    continue
+                for bucket, vals in tracker.items():
+                    total[bucket]["sum"]   += vals["sum"]
+                    total[bucket]["count"] += vals["count"]
+
+            avg = {f"{b}_avg": total[b]["sum"] / total[b]["count"] for b in total if total[b]["count"] > 0}
+            num_tokens = total["old"]["count"] // len(mlps_with_moe)
+            print(f"level_id={level_id}: {avg} (over {num_tokens} tokens)")
+    
     wandb.finish()
  
  
@@ -230,6 +258,8 @@ if __name__ == "__main__":
     parser.add_argument("--past_adapters_path", type=str)
     parser.add_argument("--classifier_path", type=str, default="")
     parser.add_argument("--top_k", type=int, default=2)
+
+    parser.add_argument("--mode", default="eval", help="Evaluation mode [eval, eval_weight_tracker]")
     
     args = parser.parse_args()
  
@@ -245,13 +275,11 @@ if __name__ == "__main__":
         device_map="auto",
     )
  
-    # DEVICE SETUP
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
  
     state_dict = torch.load(args.past_adapters_path)
-    num_experts = infer_num_experts(state_dict)
-    moe_rank = infer_rank(state_dict)
+    num_experts, moe_rank = retrieve_old_adapter_info(state_dict)
  
     cfg = {
         "model_id":              MODEL_ID,
@@ -291,9 +319,9 @@ if __name__ == "__main__":
         eval_strategy="epoch",
         save_strategy="no",
         fp16=False,
-        bf16=True,         # requires Ampere GPU (RTX 30xx, 40xx)
+        bf16=True,         
         logging_steps=250,
-        report_to="wandb",  # ← Trainer logs loss/lr/eval metrics to wandb automatically
+        report_to="wandb",  
         remove_unused_columns=False,
     )
     
