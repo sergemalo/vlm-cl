@@ -12,9 +12,11 @@ from utils.general.seed_ctrl import set_global_seed
 from utils.general.our_logging import init_logging
 
 logger      = logging.getLogger(__name__)
-date_prefix = datetime.now().strftime("%Y-%m-%d-%H:%M")
-output_dir  = Path(f"output/{date_prefix}_eval")
-output_dir.mkdir(parents=True, exist_ok=True)
+date_prefix = datetime.now().strftime("%Y-%m-%d-%H-%M")
+output_dir  = f"output/{date_prefix}"
+log_file    = f"{output_dir}/run.log"
+os.mkdir(output_dir)
+
 
 class EvalResults:
     def __init__(self):
@@ -53,7 +55,8 @@ def init_wandb(cfg: dict):
     wandb.init(
         dir     = output_dir,
         project = "vlm-cl-qwen-2b",
-        name    = date_prefix + "_eval",
+        entity = "vlm-cl",
+        name    = date_prefix + "eval",
         config  = cfg
     )
 

@@ -197,6 +197,9 @@ def build_all_samples(
     for questions_file in questions_dir.glob("*.json"):
         if valid_prefixes and not any(questions_file.stem.startswith(prefix) for prefix in valid_prefixes):
             continue
+        if questions_file.stem in ["L4_occ", "L5_collision"]:
+            logger.info(f"Skipping questions file {questions_file.name} as it corresponds to a level we want to exclude.")
+            continue
         all_samples.extend(
             build_samples_from_questions_file(
                 questions_file=questions_file,

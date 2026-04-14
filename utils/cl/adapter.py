@@ -2,7 +2,7 @@ import torch.nn as nn
 import math
 
 """
-Note: LoRA-style adapter as proposed in paper https://arxiv.org/pdf/2403.11549 
+Note: LoRA-style adapter as proposed in https://arxiv.org/pdf/2403.11549 
     1) Low-rank structure adaptation
     2) Zero initialization
     
@@ -14,13 +14,12 @@ Importantly:
 class Adapter(nn.Module):
     """Class for one LoRA-style adapter"""
     
-    def __init__(self, d_model=None, rank=None, dropout=0.0):
+    def __init__(self, d_model=None, rank=None):
         super().__init__()
 
-        # Dimensions & dropout
+        # Dimensions
         self.d_model = d_model
         self.rank = rank
-        self.dropout = dropout
 
         # LoRA parameters
         self.down_proj = nn.Linear(self.d_model, self.rank)
@@ -35,7 +34,6 @@ class Adapter(nn.Module):
 
 
     def forward(self, x):
-
         z = self.down_proj(x)
         z = self.non_linear_func(z)
         z = self.up_proj(z)

@@ -5,9 +5,13 @@ from transformers import Trainer, GenerationConfig
 from transformers.trainer_utils import EvalLoopOutput
 from torch.utils.data import DataLoader
 import string
+from transformers import AutoTokenizer
 import logging
 
+from utils.classifier.level_classifier import LevelClassifier
+
 logger      = logging.getLogger(__name__)
+
 
 IGNORE_INDEX = -100
 
@@ -17,7 +21,26 @@ class GenerativeEvalPrediction:
     references:  List[str]
 
 
-class MyTrainer(Trainer):
+class MyTrainerWithClassifier(Trainer):
+
+    def load_classifier(self, classifier_path):
+        if not classifier_path:
+            logger.error("No classifier path provided, skipping classifier loading.")
+            raise ValueError("Classifier path is required to load the classifier.")
+
+        logger.info(f"Loaded classifier from {classifier_path}")
+        self.classifier = LevelClassifier.from_pretrained(classifier_path)
+        self.classifier.processing_class = AutoTokenizer.from_pretrained(classifier_path)
+        self.classifier.eval()  # set to eval mode since we're only using it for inference during training
+
+    def set_mlps_with_moe(self, mlps_with_moe: List[torch.nn.Module]):
+        self.mlps_with_moe = mlps_with_moe
+
+    def _send_level_id_to_mlps_with_moe(self, level_id):
+        #logger.info(f"Sending level_id {level_id} to {len(self.mlps_with_moe)} MoEs...")
+        for mlp_with_moe in self.mlps_with_moe:
+            mlp_with_moe.level_id = level_id
+            mlp_with_moe.moe.level_id = level_id
 
     def _remove_unused_columns(self, dataset, description=None):
         return dataset  # don't touch the dataset
@@ -164,6 +187,7 @@ class MyTrainer(Trainer):
             batch_input_ids = inputs["input_ids"]
             batch_labels    = inputs["labels"]
             batch_size      = batch_input_ids.shape[0]
+            batch_questions = inputs["questions"]  # list of raw question strings for the classifier
 
             # Extract prompt and reference for each sample in the batch (reference: ground-truth answer)
             batch_prompt_ids = []
@@ -181,6 +205,13 @@ class MyTrainer(Trainer):
             )
 
             with torch.no_grad():
+                question_text = inputs["questions"]  # extract from questions
+                #logger.info(f"question_text: {question_text}")
+                level_id = self.classifier.predict(question_text)
+                #logger.info(f"Predicted level_id: {level_id}")
+                self._send_level_id_to_mlps_with_moe(level_id)
+
+
                 generated_ids = unwrapped_model.generate(
                     **gen_inputs,
                     generation_config=generation_config,

@@ -74,4 +74,8 @@ class Spatial457Collator:
         labels[inputs["input_ids"] == self.processor.tokenizer.pad_token_id] = -100
 
         inputs["labels"] = labels
+
+        # Keep raw question strings for the classifier
+        inputs["questions"] = [sample["question"] for sample in samples]
+
         return inputs
