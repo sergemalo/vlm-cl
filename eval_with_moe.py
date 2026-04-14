@@ -206,7 +206,7 @@ def set_trainable_param(model, cfg):
  
         
 def main(args, cfg, model, trainer):
-    init_logging(args.log_level)
+    init_logging(args.log_level, output_dir)
     set_global_seed(args.seed)
     init_wandb(cfg)
     mlps_with_moe = set_trainable_param(model, cfg)

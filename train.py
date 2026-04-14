@@ -23,8 +23,8 @@ import argparse
  
 logger      = logging.getLogger(__name__)
 date_prefix = datetime.now().strftime("%Y-%m-%d-%H-%M")
-output_dir  = f"output/{date_prefix}"
-Path(output_dir).mkdir(parents=True, exist_ok=True)
+output_dir  = Path(f"output/{date_prefix}_train")
+output_dir.mkdir(parents=True, exist_ok=True)
 
 past_level_mapping = {
     "L2_objects": "L1_single",

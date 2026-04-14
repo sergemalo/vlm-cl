@@ -5,6 +5,9 @@ from transformers import Trainer, GenerationConfig
 from transformers.trainer_utils import EvalLoopOutput
 from torch.utils.data import DataLoader
 import string
+import logging
+
+logger      = logging.getLogger(__name__)
 
 IGNORE_INDEX = -100
 
