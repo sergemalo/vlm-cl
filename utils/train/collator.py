@@ -106,4 +106,8 @@ class Spatial457Collator:
         self.counter += 1
 
 
+
+        # Keep raw question strings for the classifier
+        inputs["questions"] = [sample["question"] for sample in samples]
+
         return inputs
