@@ -5,6 +5,7 @@
 This repo contains the code developped for the project **CurriculuMoE**.  
 Course: [Université de Montréal/Mila IFT-6765](https://admission.umontreal.ca/cours-et-horaires/cours/ift-6765/) - Links between Computer Vision and Language  
 Course site: [link](https://sites.google.com/mila.quebec/ift6765-h2026/)  
+
 By:  
 [Serge Malo](https://mila.quebec/fr/annuaire/serge-malo)  
 [Francis Picard](https://mila.quebec/fr/annuaire/francis-picard)
